@@ -8,13 +8,17 @@ class Buffers:
     
     def __init__(self):
 #        self.levels = 3
-        self.Bin = [0,0,0]
-        self.Bkern = [0,0,0]
-        self.Bout = [0,0,0]
+        self.Bin = [0,0]
+        self.Bkern = [0,0]
+        self.Bout = [0,0]
 
         self.RRin = [1,1,1]
         self.RRkern = [1,1,1]
         self.RRout = [1,1,1]
+        
+        self.DRin = [0,0,0]
+        self.DRkern = [0,0,0]
+        self.DRout = [0,0,0]
                 
     def totalSpace(self):
         return sum(self.Bin[:-1]) + sum(self.Bkern[:-1]) + sum(self.Bout[:-1])
@@ -47,41 +51,78 @@ class Buffers:
         # there should be access to self.levels
     
         level = len([x.type for x in left if x.type == loop.type ])
-        if level < 0 or level > 2:
+        if level == 2:
+            return
+        if level < 0 and level > 2:
             print "WTF", level, loop
+            raise Exception('Too many loop levels') 
 
         #TODO: add buffer merging rules    
-        if loop.type == LoopType.kern:
-            self.Bin[level] = ((usedData[LoopType.row.value] + usedData[LoopType.dx.value] - 1) *
+
+        # calc buffer size only for local buffers
+        if level < 2:
+            if loop.type == LoopType.kern:
+                self.Bin[level] = ((usedData[LoopType.row.value] + usedData[LoopType.dx.value] - 1) *
                             (usedData[LoopType.col.value] + usedData[LoopType.dy.value] - 1) * usedData[LoopType.fm.value])
-            self.RRin[level] = int(ceil( (float(loop.size) / usedData[LoopType.kern.value]) * 
-                                    (usedData[LoopType.row.value] + usedData[LoopType.dx.value] - 1) *
-                                    (usedData[LoopType.col.value] + usedData[LoopType.dy.value] - 1) /
-                                    (usedData[LoopType.row.value] * usedData[LoopType.col.value])                                
-                                    ))
+            elif loop.type == LoopType.fm:
+                self.Bout[level] = usedData[LoopType.row.value]*usedData[LoopType.col.value]*usedData[LoopType.kern.value]
+            elif (loop.type == LoopType.row or loop.type == LoopType.col):
+                self.Bkern[level] = usedData[LoopType.kern.value]*usedData[LoopType.fm.value]*usedData[LoopType.dx.value]*usedData[LoopType.dy.value]            
+            elif loop.type == LoopType.dx:
+                self.Bin[level] = ((usedData[LoopType.row.value] + usedData[LoopType.dx.value] - 1) *
+                                (usedData[LoopType.col.value] + usedData[LoopType.dy.value] - 1) * usedData[LoopType.fm.value])
+                self.Bout[level] = usedData[LoopType.row.value]*usedData[LoopType.col.value]*usedData[LoopType.kern.value]
+            elif loop.type == LoopType.dy:
+                self.Bin[level] = ((usedData[LoopType.row.value] + usedData[LoopType.dx.value] - 1) *
+                                (usedData[LoopType.col.value] + usedData[LoopType.dy.value] - 1) * usedData[LoopType.fm.value])
+                self.Bout[level] = usedData[LoopType.row.value]*usedData[LoopType.col.value]*usedData[LoopType.kern.value]
+            
+            
+        # calc RR and DR
+        if loop.type == LoopType.kern:
+            tmp = int(ceil( (float(loop.size) / usedData[LoopType.kern.value]) ))
+            self.RRin[level] *= tmp
+            self.DRin[level] += tmp * self.Bin[level]
         elif loop.type == LoopType.fm:
-            self.Bout[level] = usedData[LoopType.row.value]*usedData[LoopType.col.value]*usedData[LoopType.kern.value]
-            self.RRout[level] = int(ceil(2.0 * loop.size / usedData[LoopType.fm.value]))
-        #TODO: add rules to merge row/col buffer when they follow each other
+            tmp = int(ceil( float(loop.size) / usedData[LoopType.fm.value]))
+            self.RRout[level] *= tmp
+            self.DRout[level] += 2 * tmp * self.Bout[level]
         elif (loop.type == LoopType.row or loop.type == LoopType.col):
-            self.Bkern[level] = usedData[LoopType.kern.value]*usedData[LoopType.fm.value]*usedData[LoopType.dx.value]*usedData[LoopType.dy.value]
-            # TODO: recheck this
-            self.RRkern[level] =  int(ceil(loop.size*usedData[LoopType.col.value if loop.type==LoopType.row else LoopType.row.value] / 
+            tmp = int(ceil(loop.size*usedData[loop.type.value] / 
                                     float(usedData[LoopType.row.value]*usedData[LoopType.col.value]) ))
-        #TODO: check dx, dy
-#        elif (loop[0] == LoopType.dx or loop[0] == LoopType.dy):
-#            self.Bin[level] = ((usedData[LoopType.row.value] + usedData[LoopType.dx.value] - 1) *
-#                            (usedData[LoopType.col.value] + usedData[LoopType.dy.value] - 1) * usedData[LoopType.fm.value])
-#            self.RRin[level] += loop[1] * int(ceil( float(usedData[LoopType.row.value] + usedData[LoopType.dx.value] - 1) *
-#                                    (usedData[LoopType.col.value] + usedData[LoopType.dy.value] - 1) /
-#                                    (usedData[LoopType.row.value] * usedData[LoopType.col.value])                                
-#                                    ))
-#                                    
-#            self.Bout[level] = usedData[LoopType.row.value]*usedData[LoopType.col.value]*usedData[LoopType.kern.value]
-#            self.RRout[level] += int(ceil(2.0 * loop[1])) #something is wrong here
+            self.RRkern[level] *= tmp
+            self.DRkern[level] += tmp * self.Bin[level]
+                       
+        #TODO: check levels of dx dy
+        elif loop.type == LoopType.dx:
+            tmp = ceil(float(loop.size)/ usedData[loop.type.value]) / (
+                                        (usedData[LoopType.row.value] + loop.size - 1) * 
+                                        (usedData[LoopType.col.value] + usedData[LoopType.dy.value] - 1) /
+                                        (usedData[LoopType.row.value] * usedData[LoopType.col.value]))
+            self.RRin[level] *= tmp
+            self.DRin[level] += tmp * self.Bin[level]
+            
+            tmp = int(ceil(float(loop.size)/ usedData[loop.type.value]))
+            self.RRout[level] *= tmp
+            self.DRout[level] += 2 * tmp * self.Bout[level]
     
-    def permBuff():
-#        TODO: add possible shifts
+        elif loop.type == LoopType.dy:
+            tmp = ceil(float(loop.size)/ usedData[loop.type.value]) / (
+                                        (usedData[LoopType.row.value] + usedData[LoopType.dx.value] - 1) * 
+                                        (usedData[LoopType.col.value] + loop.size - 1) /
+                                        (usedData[LoopType.row.value] * usedData[LoopType.col.value]))
+            self.RRin[level] *= tmp
+            self.DRin[level] += tmp * self.Bin[level]
+            
+            tmp = int(ceil(float(loop.size)/ usedData[loop.type.value]))
+            self.RRout[level] *= tmp
+            self.DRout[level] += 2 * tmp * self.Bout[level]
+
+
+#    def mergeBuff(self, hwRestrictions):
+#        for b,rr in zip([self.Bin, self.RRin, self.Bkern], [self.RRkern, self.Bout, self.RRout]):
+#            if 0 in b:
+                
           
 #    def shiftLeft(self):
 #        for x in [self.Bin, self.RRin, self.Bkern, self.RRkern, self.Bout, self.RRout]:
@@ -90,4 +131,7 @@ class Buffers:
     def __str__ (self):
         return "Bin " + str(self.Bin) + str(self.RRin) + " \n" + \
                "Bkern " + str(self.Bkern) + str(self.RRkern) + " \n" + \
-               "Bout " + str(self.Bout) + str(self.RRout)
+               "Bout " + str(self.Bout) + str(self.RRout)  + "\n" + \
+               "DRin " + str(self.DRout) + str([b*r for b,r in zip(self.Bin,self.RRin)]) + "\n" + \
+               "DRkern " + str(self.DRkern) + str([b*r for b,r in zip(self.Bkern,self.RRkern)]) + "\n" + \
+               "DRout "+ str(self.DRin) + str([b*r for b,r in zip(self.Bout,self.RRout)]) + "\n"
