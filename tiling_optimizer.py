@@ -80,6 +80,8 @@ class TemplateOptimizer:
                 continue            
             
 #            tiledTemplate = self.hwTemplate.architecture + list(tile)
+            
+            tile = list(tile)
 
             # init by putting all data to DRAM
             for index in xrange(len(tile)):
@@ -103,10 +105,11 @@ class TemplateOptimizer:
             t1 = time.clock()
             self.OptimizeTile(tile)
             print "Time ", time.clock() - t1
-
-    def OptimizeTile (self, tiling):    
-                
-        self.buffBest = self.calcBuffers(tiling)  
+            sys.exit()
+            
+    def OptimizeTile (self, tiling):   
+        
+        self.buffBest = self.calcBuffers(self.hwTemplate.archP + tiling)  
         self.buffBest.concatBuff(self.hwTemplate.buff)
         
         if not self.buffFitMem(self.buffBest):
@@ -132,35 +135,41 @@ class TemplateOptimizer:
     #    templateULoops = {loop[0] for loop in tiledTemplate if len(loop) == 3}
         
         itCounter = 0
+        t2 = time.clock()
         
         # Pragma.u loops alwasy occupy all possible MACs
         for ALUlist in self.ALUperm(self.hwTemplate.numU, self.hwRestrictions.MAC, self.hwRestrictions.MAC):
             self.hwTemplate.setALU(ALUlist)
             
-#            minLoopValues = [1]*len(LoopType)
-#            for loop in self.hwTemplate.archU:
-#                minLoopValues[loop.type.value] = loop.size
-
-            print itCounter
+            minLoopValues = [1]*len(LoopType)
+            for loop in self.hwTemplate.archU:
+                minLoopValues[loop.type.value] = loop.size
+                for i, archLoop in enumerate(tiledArch):
+                    if archLoop.type == loop.type:
+                        if archLoop.type in [x.type for x in tiledArch[i+1:]]:
+                            tiledArch[i].size = loop.size
+                        
+            print "ALUperm", itCounter, " took: ", time.clock() - t2
+            t2 = time.clock()
             currloopGroup = 0
             # Main loop
             # Exit condition: all loops reach maximum, i.e. the last group overflows
             while currloopGroup < len(LoopType):
-
+                               
                 currLoopSliceIndexes = loopIndexByType[currloopGroup]
-                res, currLoopIndex = self.incrementTiling(tiledArch, currLoopSliceIndexes, 
-                                            self.layer.getMaxLoopSizeByIndex(currloopGroup))
-
-#                printTile(tiledArch, 1)
+                res, currLoopIndex = self.incrementTiling(tiledArch, currLoopSliceIndexes, self.layer.getMaxLoopSizeByIndex(currloopGroup), minLoopValues[currloopGroup])
 
                 if res == IncTileResult.LoopOverflow:
                     currloopGroup += 1
                     continue
                     
                 if res == IncTileResult.LoopIncremented:
+#                    printTile(tiledArch, 1)
                     itCounter += 1
+                    print itCounter
+                    if itCounter > 50000:
+                        sys.exit()
     
-                    #TODO: calcBuffers should consider the archU as well, but not calculate its loops directly
                     currBuff = self.calcBuffers(tiledArch)
                     currBuff.concatBuff(self.hwTemplate.buff)
 
@@ -178,7 +187,7 @@ class TemplateOptimizer:
                         self.buffBest = currBuff
                         self.tilingBest = tiledArch
 #                        print ' new best! '
-#                        printTile(tiledArch,1)
+#                        printTile(self.hwTemplate.archU + tiledArch,1)
 #                        print self.energyBest
 #                        print self.buffBest
                     else:
@@ -202,10 +211,11 @@ class TemplateOptimizer:
             
     def calcEnergy(self, buff):
         res = 0        
-        for rr, data in zip([buff.RRin, buff.RRkern, buff.RRout], [self.layer.dataIn, self.layer.dataKern, self.layer.dataOut]):
-            res += sum(r*e for r,e in zip(rr,[self.energyModel.RF, self.energyModel.buff, self.energyModel.DRAM])) * data
-            #TODO: recheck this
-        return res  
+            
+        for rr in [buff.RRin, buff.RRkern, buff.RRout]:
+            res += rr[2]*self.energyModel.DRAM + rr[2]*rr[1]*self.energyModel.buff + rr[2]*rr[1]*rr[0]*self.energyModel.RF
+    
+        return res 
             
             
     def calcBuffers(self, tiledTemplate):
@@ -213,16 +223,36 @@ class TemplateOptimizer:
         for index in xrange(len(tiledTemplate)):
             loop = tiledTemplate[index]          
             left = tiledTemplate[:index]
-            right = tiledTemplate[index+1:]
-            
-            buff.calcBuffSizeRR(left, loop, right)
+           
+#            print left, loop, self.hwTemplate.archU
+            buff.calcBuffSizeRR(left, loop, self.hwTemplate.archU)
         
-        for x in [buff.RRin, buff.RRkern, buff.RRout]:
-            if x[-1] == 0:
-                x[-1] = 1
-                
-#        buff.shiftBuffers()
-        return buff
+    
+    #    for some reason this erases everything to 0
+    #    for rr,b in zip([buff.RRin, buff.RRkern, buff.RRout],[buff.Bin, buff.Bkern, buff.Bout]):
+    #        b[0] = b[0] if int(rr[0]) == 1 else 0
+    
+    #   if RR==1 we do not need the buffer
+    #   normal code does not want to do it, my mind is blowing
+        for i in [0,1]:
+            if int(buff.RRin[i]) == 1:
+                buff.RRin[i] = 0
+                buff.Bin[i] = 0
+    
+            if int(buff.RRkern[i]) == 1:
+                buff.RRkern[i] = 0
+                buff.Bkern[i] = 0
+        
+            if int(buff.RRout[i]) == 1:
+                buff.RRout[i] = 0
+                buff.Bout[i] = 0    
+            else:
+                buff.RRout[i] *= 2
+        
+    #    for x in [buff.RRin, buff.RRkern, buff.RRout]:
+    #        if x[-1] == 0:
+    #            x[-1] = 1
+            return buff
         
 #   divides MACs for ALUs with reminder = 0       
 #   TODO: consider non-full allocation of MACS, i.e. for 17 MACs
@@ -238,13 +268,14 @@ class TemplateOptimizer:
                     for perm in self.ALUperm(depth-1, MAC/i, maxMAC):
                         yield [i] + perm
         
-    def incrementTiling(self, tiledTemplate, loopSliceIndexes, maxLoopValue):
+    def incrementTiling(self, tiledTemplate, loopSliceIndexes, maxLoopValue, minLoopValue):
     # if current group of loops has iterated through all the variants - reset them to 1,1,max
         # and try to increment the next loop
         if tiledTemplate[loopSliceIndexes[0]].size == maxLoopValue:
+#           TODO: this is probably not needed - [-1] is always maxLoopValue
             tiledTemplate[loopSliceIndexes[-1]].size = maxLoopValue
             for i in loopSliceIndexes[:-1]:
-                tiledTemplate[i].size = 1
+                tiledTemplate[i].size = minLoopValue
             return IncTileResult.LoopOverflow, 0
         
         # increment the inner loop value until it reaches outer loop`s value
@@ -254,8 +285,8 @@ class TemplateOptimizer:
                 tiledTemplate[loopSliceIndexes[i]].size += 1 
                 return IncTileResult.LoopIncremented, i
             else:
-                for ii in xrange(i):
-                    tiledTemplate[loopSliceIndexes[ii]].size = 1
+                for ii in xrange(i+1):
+                    tiledTemplate[loopSliceIndexes[ii]].size = minLoopValue
                 continue
             
     def updateTilingOnBuffOverflow(self, tiledTemplate, currGroupSlice, currLoopIndex):
@@ -315,50 +346,127 @@ zinq=HWrestrictions((3000,1), 256)
 #writer.writerow(('Template','Layer'))
 
 optimizer = TemplateOptimizer(DiaNNao(), AlexNet2, zinq)
-#optimizer.Optimize()
+optimizer.Optimize()
 
 
-def calcBuffers(tiledTemplate, arch):
-    buff = Buffers()
-    for index in xrange(len(tiledTemplate)):
-        loop = tiledTemplate[index]          
-        left = tiledTemplate[:index]
-#        right = tiledTemplate[index+1:]
-        
-        buff.calcBuffSizeRR(left, loop, arch)
-    
-    for x in [buff.RRin, buff.RRkern, buff.RRout]:
-        if x[-1] == 0:
-            x[-1] = 1
-            
-#        buff.shiftBuffers()
-    return buff
+#def calcBuffers(tiledTemplate, arch):
+#    buff = Buffers()
+#    for index in xrange(len(tiledTemplate)):
+#        loop = tiledTemplate[index]          
+#        left = tiledTemplate[:index]
+#       
+#        buff.calcBuffSizeRR(left, loop, arch)
+#    
+#
+##    for some reason this erases everything to 0
+##    for rr,b in zip([buff.RRin, buff.RRkern, buff.RRout],[buff.Bin, buff.Bkern, buff.Bout]):
+##        b[0] = b[0] if int(rr[0]) == 1 else 0
+#
+##   if RR==1 we do not need the buffer
+##   normal code does not want to do it, my mind is blowing
+#    for i in [0,1]:
+#        if int(buff.RRin[i]) == 1:
+#            buff.RRin[i] = 0
+#            buff.Bin[i] = 0
+#
+#        if int(buff.RRkern[i]) == 1:
+#            buff.RRkern[i] = 0
+#            buff.Bkern[i] = 0
+#    
+#        if int(buff.RRout[i]) == 1:
+#            buff.RRout[i] = 0
+#            buff.Bout[i] = 0    
+#        else:
+#            buff.RRout[i] *= 2
+#    
+##    for x in [buff.RRin, buff.RRkern, buff.RRout]:
+##        if x[-1] == 0:
+##            x[-1] = 1
+#               
+#        
+#    for i,d in enumerate(zip(buff.Bkern, buff.RRkern)):
+#        if int(d[1]) == 1:        
+#            buff.Bkern[i] = 0
+#            
+#    for i,d in enumerate(zip(buff.Bin, buff.RRin)):
+#        if int(d[1]) == 1:        
+#            buff.Bin[i] = 0
+#            
+#    for i,d in enumerate(zip(buff.Bout, buff.RRout)):
+#        if int(d[1]) == 1:        
+#            buff.Bout[i] = 0
+#    
+##    buff.Bin = [b if rr != 1 else 0 for b,rr in zip(buff.Bin, buff.RRin)]
+##    buff.Bkern = [b if rr != 1 else 0 for b,rr in zip(buff.Bkern, buff.RRkern)]
+##    buff.Bout = [b if rr != 1 else 0 for b,rr in zip(buff.Bout, buff.RRout)]
+#    
+#    return buff
+#
+#
+#def calcEnergy(buff, layer, energyModel):
+#    res = 0        
+#        
+#    for rr in [buff.RRin, buff.RRkern, buff.RRout]:
+#        res += rr[2]*energyModel.DRAM + rr[2]*rr[1]*energyModel.buff + rr[2]*rr[1]*rr[0]*energyModel.RF
+#
+#    return res
 
+#dian = DiaNNao()
+#tiling = [Loop(LoopType.fm, 48, Pragma.n),
+#          Loop(LoopType.dx, 5, Pragma.n),
+#          Loop(LoopType.dy, 5, Pragma.n),
+#          Loop(LoopType.kern, 16, Pragma.n),
+#          Loop(LoopType.row, 1, Pragma.n),
+#          Loop(LoopType.col, 55, Pragma.n),
+#          Loop(LoopType.kern, 256, Pragma.n),
+#          Loop(LoopType.row, 55, Pragma.n),
+#          Loop(LoopType.col, 55, Pragma.n),
+#          ]
 
-def calcEnergy(buff, layer, energyModel):
-    res = 0        
-    for rr, data in zip([buff.RRin, buff.RRkern, buff.RRout], [layer.dataIn, layer.dataKern, layer.dataOut]):
-        res += sum(r*e for r,e in zip(rr,[energyModel.RF, energyModel.buff, energyModel.DRAM])) * data
-        #TODO: recheck this
-    return res  
+#tiling = [Loop(LoopType.fm, 48, Pragma.n),
+#          Loop(LoopType.dx, 5, Pragma.n),
+#          Loop(LoopType.dy, 5, Pragma.n),
+#          Loop(LoopType.kern, 16, Pragma.n),
+#          Loop(LoopType.row, 1, Pragma.n),
+#          Loop(LoopType.col, 55, Pragma.n),
+#
+#Loop(LoopType.kern, 16, Pragma.n),
+#Loop(LoopType.fm, 48, Pragma.n),
+#Loop(LoopType.fm, 48, Pragma.n),
+#Loop(LoopType.row, 1, Pragma.n),
+#Loop(LoopType.col, 55, Pragma.n),
+#
+#          Loop(LoopType.kern, 256, Pragma.n),
+#          Loop(LoopType.row, 55, Pragma.n),
+#          Loop(LoopType.col, 55, Pragma.n),
+#
+#          ]
 
-dian = DiaNNao()
-tiling = [Loop(LoopType.fm, 48, Pragma.n),
-          Loop(LoopType.dx, 5, Pragma.n),
-          Loop(LoopType.dy, 5, Pragma.n),
-          Loop(LoopType.kern, 16, Pragma.n),
-          Loop(LoopType.row, 1, Pragma.n),
-          Loop(LoopType.col, 55, Pragma.n),
-          Loop(LoopType.kern, 256, Pragma.n),
-          Loop(LoopType.row, 55, Pragma.n),
-          Loop(LoopType.col, 55, Pragma.n),
-          ]
-buff = calcBuffers(tiling, dian.archU + dian.archP)  
-buff.concatBuff(dian.buff)
-
-currEnergy = calcEnergy(buff, AlexNet2, EnergyModel())
-print buff
-
+#tiling = [Loop(LoopType.fm, 48, Pragma.n),
+##          Loop(LoopType.row, 4, Pragma.n),
+#          Loop(LoopType.dx, 5, Pragma.n),
+#          Loop(LoopType.dy, 5, Pragma.n),
+#        Loop(LoopType.row, 28, Pragma.n),
+#          Loop(LoopType.kern, 16, Pragma.n),
+#          Loop(LoopType.col, 55, Pragma.n),
+#
+#Loop(LoopType.kern, 48, Pragma.n),
+#Loop(LoopType.fm, 48, Pragma.n),
+#Loop(LoopType.fm, 48, Pragma.n),
+#Loop(LoopType.col, 55, Pragma.n),
+#Loop(LoopType.row, 55, Pragma.n),
+#          Loop(LoopType.kern, 256, Pragma.n),
+#          Loop(LoopType.row, 55, Pragma.n),
+#          Loop(LoopType.col, 55, Pragma.n),
+#
+#          ]
+#
+#buff = calcBuffers(tiling, dian.archU + dian.archP)  
+#buff.concatBuff(dian.buff)
+#
+#currEnergy = calcEnergy(buff, AlexNet2, EnergyModel())
+#print buff
+#print currEnergy
 
 
 #f.close()

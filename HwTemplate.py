@@ -16,9 +16,7 @@ class HwTemplate(object):
         self.buff = self.calcBufferSize()
         
         self.numU = len(self.archU)
-#        self.pragmaUindex = [i for i,x in enumerate(self.architecture) if x.pragma == Pragma.u]
-#        self.architectureU = [x for x in self.architecture if x.pragma == Pragma.u]
-#        self.architectureP = [x for x in self.architecture if x.pragma == Pragma.p]
+
         
     def calcALUamount(self):
         return reduce(lambda x, y: x*y, self.archU)
@@ -28,7 +26,7 @@ class HwTemplate(object):
         
     def setALU(self, ALUlist):
         for i,MAC in enumerate(ALUlist):
-            self.archU[i] = MAC
+            self.archU[i].size = MAC
             
     
 '''
@@ -37,7 +35,9 @@ Example tempate classes
         
 class DiaNNao(HwTemplate):
     def __init__(self):
-        super(DiaNNao, self).__init__("DiaNNao", [Loop(LoopType.fm, 16, Pragma.u), Loop(LoopType.kern, 16, Pragma.u)])
+        super(DiaNNao, self).__init__("DiaNNao", [Loop(LoopType.fm, 16, Pragma.u), Loop(LoopType.kern, 16, Pragma.u)],
+              [Loop(LoopType.fm, 1, Pragma.p)]
+              )
 
 
 # TODO: there should be RR and energy computations here
