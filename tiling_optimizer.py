@@ -6,10 +6,11 @@
 
 import sys
 from enum import Enum
-import csv
+#import csv
 import itertools
-from operator import mul, itemgetter
+from operator import mul
 import time
+import math
 
 # my classes
 from EenrgyModel import EnergyModel
@@ -17,7 +18,7 @@ from LoopType import LoopType, Loop
 from Buffers import Buffers
 from Layer import Layer
 from HwTemplate import DiaNNao, Pragma
-
+from Model import *
 
 #netFileName = sys.argv[1]
 
@@ -32,7 +33,7 @@ class IncTileResult(Enum):
     LoopIncremented = 1
     LoopOverflow = 2
 
-class TemplateOptimizer:
+class TemplateOptimizer(object):
 
     levels = 3
     
@@ -109,6 +110,7 @@ class TemplateOptimizer:
             
     def OptimizeTile (self, tiling):   
         
+        # TODO: recheck this - it depends on archU
         self.buffBest = self.calcBuffers(self.hwTemplate.archP + tiling)  
         self.buffBest.concatBuff(self.hwTemplate.buff)
         
@@ -164,29 +166,32 @@ class TemplateOptimizer:
                     continue
                     
                 if res == IncTileResult.LoopIncremented:
-#                    printTile(tiledArch, 1)
+                    print ""
+                    printTile(self.hwTemplate.archU +tiledArch, 1)
                     itCounter += 1
-                    print itCounter
+#                    print itCounter
                     if itCounter > 50000:
                         sys.exit()
     
                     currBuff = self.calcBuffers(tiledArch)
                     currBuff.concatBuff(self.hwTemplate.buff)
+                    
+                    print currBuff
 
                     if not self.buffFitMem(currBuff):
                         self.updateTilingOnBuffOverflow(tiledArch, loopIndexByType[0:currloopGroup+1], currLoopIndex)
                         currloopGroup = 0
-#                        print 'buff overflow'
+                        print 'buff overflow'
                         continue
                     
                     currEnergy = self.calcEnergy(currBuff)
-#                    print currEnergy
+                    print currEnergy
                     if currEnergy < self.energyBest:
                         self.energyBest = currEnergy
                         del self.buffBest
                         self.buffBest = currBuff
                         self.tilingBest = tiledArch
-#                        print ' new best! '
+                        print ' new best! '
 #                        printTile(self.hwTemplate.archU + tiledArch,1)
 #                        print self.energyBest
 #                        print self.buffBest
@@ -209,13 +214,16 @@ class TemplateOptimizer:
             return True
             
             
-    def calcEnergy(self, buff):
-        res = 0        
-            
+    def calcEnergy(self, buff):       
+        res = 0
         for rr in [buff.RRin, buff.RRkern, buff.RRout]:
-            res += rr[2]*self.energyModel.DRAM + rr[2]*rr[1]*self.energyModel.buff + rr[2]*rr[1]*rr[0]*self.energyModel.RF
+            res += rr[2]*energyModel.DRAM
+            if rr[1] != 1:
+                res += rr[2]*rr[1]*energyModel.buff 
+            if rr[0] != 1:
+                res += rr[2]*rr[1]*rr[0]*energyModel.RF
     
-        return res 
+        return res
             
             
     def calcBuffers(self, tiledTemplate):
@@ -223,11 +231,26 @@ class TemplateOptimizer:
         for index in xrange(len(tiledTemplate)):
             loop = tiledTemplate[index]          
             left = tiledTemplate[:index]
-           
-#            print left, loop, self.hwTemplate.archU
             buff.calcBuffSizeRR(left, loop, self.hwTemplate.archU)
+
+#        TODO: if you remove the third iteration of loop change [-2] to [-1]
+        kernArch = [x.size for x in self.hwTemplate.archU if x.type == LoopType.kern]      
+        dxdyArch = [x.size for x in self.hwTemplate.archU if x.type == LoopType.dx or x.type == LoopType.dy]
+        dxdyArch = 1 if dxdyArch == [] else reduce(mul, dxdyArch)
+        buff.RRin[2] = self.layer.kern * dxRR(self.layer.dx, 1, self.layer.X)[0] * dxRR(self.layer.dy, 1, self.layer.Y)[0] / \
+                        reduce(mul,kernArch) / dxdyArch
         
-    
+#        buff.RRin[2] = kernRR(self.layer.kern, kern[-2])
+#        if math.ceil(buff.RRin[0] * buff.RRin[1]) == 1:
+#            buff.RRin[2] *= dxRR(self.layer.dx, 1, self.layer.X)[0] * dyRR(self.layer.dy, 1, self.layer.Y)[0]
+        
+        fm = [x.size for x in tiledTemplate if x.type == LoopType.fm]
+        buff.RRout[2] = fmRR(self.layer.fm, fm[-2])
+        
+        row = [x.size for x in tiledTemplate if x.type == LoopType.row]
+        col = [x.size for x in tiledTemplate if x.type == LoopType.col]
+        buff.RRkern[2] = rowRR(self.layer.Y, row[-2]) * colRR(self.layer.X, col[-2])
+        
     #    for some reason this erases everything to 0
     #    for rr,b in zip([buff.RRin, buff.RRkern, buff.RRout],[buff.Bin, buff.Bkern, buff.Bout]):
     #        b[0] = b[0] if int(rr[0]) == 1 else 0
@@ -235,24 +258,33 @@ class TemplateOptimizer:
     #   if RR==1 we do not need the buffer
     #   normal code does not want to do it, my mind is blowing
         for i in [0,1]:
-            if int(buff.RRin[i]) == 1:
-                buff.RRin[i] = 0
+            if math.ceil(buff.RRin[i]) == 1:
+#                buff.RRin[i] = 0
                 buff.Bin[i] = 0
     
             if int(buff.RRkern[i]) == 1:
-                buff.RRkern[i] = 0
+#                buff.RRkern[i] = 0
                 buff.Bkern[i] = 0
         
             if int(buff.RRout[i]) == 1:
-                buff.RRout[i] = 0
+#                buff.RRout[i] = 0
                 buff.Bout[i] = 0    
             else:
                 buff.RRout[i] *= 2
+                buff.RRout[i] -= 1
+                
+        if int(buff.RRout[2]) == 1:
+#                buff.RRout[2] = 0
+            pass
+        else:
+            buff.RRout[2] *= 2
+            buff.RRout[2] -= 1
         
     #    for x in [buff.RRin, buff.RRkern, buff.RRout]:
     #        if x[-1] == 0:
     #            x[-1] = 1
-            return buff
+
+        return buff
         
 #   divides MACs for ALUs with reminder = 0       
 #   TODO: consider non-full allocation of MACS, i.e. for 17 MACs
@@ -336,82 +368,111 @@ Assumptions
 
 ###############################################################################
 
-#AlexNet1 = Layer("AlexNet1")
+#sys.stdout = open('clogAllTheLoops', 'w')
+#
+##AlexNet1 = Layer("AlexNet1")
 AlexNet2 = Layer("AlexNet2", X=55, Y=55, fm=48, kern=256, dx=5, dy=5, stride=1)
-
-zinq=HWrestrictions((3000,1), 256)
+#
+#zinq=HWrestrictions((3000,1), 256)
 
 #f = open(sys.argv[2], 'wb')
 #writer = csv.writer(f, delimiter=',', quotechar=',')
 #writer.writerow(('Template','Layer'))
 
-optimizer = TemplateOptimizer(DiaNNao(), AlexNet2, zinq)
-optimizer.Optimize()
+#optimizer = TemplateOptimizer(DiaNNao(), AlexNet2, zinq)
+#optimizer.Optimize()
 
 
-#def calcBuffers(tiledTemplate, arch):
-#    buff = Buffers()
-#    for index in xrange(len(tiledTemplate)):
-#        loop = tiledTemplate[index]          
-#        left = tiledTemplate[:index]
-#       
-#        buff.calcBuffSizeRR(left, loop, arch)
+def calcBuffers(tiledTemplate, archU, layer):
+        buff = Buffers()
+        for index in xrange(len(tiledTemplate)):
+            loop = tiledTemplate[index]          
+            left = tiledTemplate[:index]
+            buff.calcBuffSizeRR(left, loop, archU)
+
+#       Recheck this, it depnds on position of dx,dy, and total is not constant
+#        TODO: if you remove the third iteration of loop change [-2] to [-1]
+#        kernArch = [x.size for x in archU if x.type == LoopType.kern]      
+#        dxdyArch = [x.size for x in archU if x.type == LoopType.dx or x.type == LoopType.dy]
+#        dxdyArch = 1 if dxdyArch == [] else reduce(mul, dxdyArch)
+        # Calculate maximum value and divide it to already used RRin
+        
+        # Total size is not always constant (e.g. when row,col=1 dx,dy based RRinp = 1)
+        # TODO: correct this
+                    
+#        buff.RRin[2] = layer.kern * dxRR(layer.dx, 1, layer.X)[0] * dxRR(layer.dy, 1, layer.Y)[0] / \
+#                        reduce(mul,kernArch) / dxdyArch
+#        buff.RRin[2] /= buff.RRin[0] * buff.RRin[1]
+                    
+        kern = [x.size for x in tiledTemplate if x.type == LoopType.kern]
+        buff.RRin[2] = kernRR(layer.kern, kern[-2])
+        
+#        if (buff.Bin[0] == 0 and buff.Bin[1] == 0):
+#            pass
+
+        
+#        buff.RRin[2] = kernRR(self.layer.kern, kern[-2])
+#        if math.ceil(buff.RRin[0] * buff.RRin[1]) == 1:
+#            buff.RRin[2] *= dxRR(self.layer.dx, 1, self.layer.X)[0] * dyRR(self.layer.dy, 1, self.layer.Y)[0]
+        
+        fm = [x.size for x in tiledTemplate if x.type == LoopType.fm]
+        buff.RRout[2] = fmRR(layer.fm, fm[-2])
+        
+        row = [x.size for x in tiledTemplate if x.type == LoopType.row]
+        col = [x.size for x in tiledTemplate if x.type == LoopType.col]
+        buff.RRkern[2] = rowRR(layer.Y, row[-2]) * colRR(layer.X, col[-2])
+        
+    #    for some reason this erases everything to 0
+    #    for rr,b in zip([buff.RRin, buff.RRkern, buff.RRout],[buff.Bin, buff.Bkern, buff.Bout]):
+    #        b[0] = b[0] if int(rr[0]) == 1 else 0
+    
+    #   if RR==1 we do not need the buffer
+    #   normal code does not want to do it, my mind is blowing
+        for i in [0,1]:
+#            if math.ceil(buff.RRin[i]) == 1:
+#                buff.Bin[i] = 0
 #    
-#
-##    for some reason this erases everything to 0
-##    for rr,b in zip([buff.RRin, buff.RRkern, buff.RRout],[buff.Bin, buff.Bkern, buff.Bout]):
-##        b[0] = b[0] if int(rr[0]) == 1 else 0
-#
-##   if RR==1 we do not need the buffer
-##   normal code does not want to do it, my mind is blowing
-#    for i in [0,1]:
-#        if int(buff.RRin[i]) == 1:
-#            buff.RRin[i] = 0
-#            buff.Bin[i] = 0
-#
-#        if int(buff.RRkern[i]) == 1:
-#            buff.RRkern[i] = 0
-#            buff.Bkern[i] = 0
-#    
-#        if int(buff.RRout[i]) == 1:
-#            buff.RRout[i] = 0
-#            buff.Bout[i] = 0    
-#        else:
-#            buff.RRout[i] *= 2
-#    
-##    for x in [buff.RRin, buff.RRkern, buff.RRout]:
-##        if x[-1] == 0:
-##            x[-1] = 1
-#               
+#            if int(buff.RRkern[i]) == 1:
+#                buff.Bkern[i] = 0
 #        
-#    for i,d in enumerate(zip(buff.Bkern, buff.RRkern)):
-#        if int(d[1]) == 1:        
-#            buff.Bkern[i] = 0
-#            
-#    for i,d in enumerate(zip(buff.Bin, buff.RRin)):
-#        if int(d[1]) == 1:        
-#            buff.Bin[i] = 0
-#            
-#    for i,d in enumerate(zip(buff.Bout, buff.RRout)):
-#        if int(d[1]) == 1:        
-#            buff.Bout[i] = 0
-#    
-##    buff.Bin = [b if rr != 1 else 0 for b,rr in zip(buff.Bin, buff.RRin)]
-##    buff.Bkern = [b if rr != 1 else 0 for b,rr in zip(buff.Bkern, buff.RRkern)]
-##    buff.Bout = [b if rr != 1 else 0 for b,rr in zip(buff.Bout, buff.RRout)]
-#    
-#    return buff
-#
-#
-#def calcEnergy(buff, layer, energyModel):
-#    res = 0        
-#        
-#    for rr in [buff.RRin, buff.RRkern, buff.RRout]:
-#        res += rr[2]*energyModel.DRAM + rr[2]*rr[1]*energyModel.buff + rr[2]*rr[1]*rr[0]*energyModel.RF
-#
-#    return res
+#            if int(buff.RRout[i]) == 1:
+#                buff.Bout[i] = 0    
+#            else:
+                buff.RRout[i] *= 2
+                buff.RRout[i] -= 1
+                
 
-#dian = DiaNNao()
+        buff.RRout[2] *= 2 
+        buff.RRout[2] -= 1
+        
+    #    for x in [buff.RRin, buff.RRkern, buff.RRout]:
+    #        if x[-1] == 0:
+    #            x[-1] = 1
+    
+        return buff
+
+
+def calcEnergy(buff, layer, energyModel):
+    res = 0        
+        
+    for rr in [buff.RRin, buff.RRkern, buff.RRout]:
+        res += rr[2]*energyModel.DRAM
+        if rr[1] != 1:
+            res += rr[2]*rr[1]*energyModel.buff 
+        if rr[0] != 1:
+            res += rr[2]*rr[1]*rr[0]*energyModel.RF
+
+    return res
+    
+    
+from test import dividors
+
+dian = DiaNNao()
+#dian.archU = [Loop(LoopType.fm, 4, Pragma.u), Loop(LoopType.kern, 4, Pragma.u)]
+dian.archU = [Loop(LoopType.dx, 5, Pragma.u), Loop(LoopType.dy, 5, Pragma.u), Loop(LoopType.kern, 4, Pragma.u )]
+
+dian.buff.RRout[0] = dxRR(AlexNet2.dx, 1, col)
+
 #tiling = [Loop(LoopType.fm, 48, Pragma.n),
 #          Loop(LoopType.dx, 5, Pragma.n),
 #          Loop(LoopType.dy, 5, Pragma.n),
@@ -422,25 +483,31 @@ optimizer.Optimize()
 #          Loop(LoopType.row, 55, Pragma.n),
 #          Loop(LoopType.col, 55, Pragma.n),
 #          ]
+for ii in dividors(256):
+    for i in dividors(ii):
+        
+        if (ii < 4 or i < 4):
+            continue
 
-#tiling = [Loop(LoopType.fm, 48, Pragma.n),
-#          Loop(LoopType.dx, 5, Pragma.n),
-#          Loop(LoopType.dy, 5, Pragma.n),
-#          Loop(LoopType.kern, 16, Pragma.n),
-#          Loop(LoopType.row, 1, Pragma.n),
-#          Loop(LoopType.col, 55, Pragma.n),
-#
-#Loop(LoopType.kern, 16, Pragma.n),
-#Loop(LoopType.fm, 48, Pragma.n),
-#Loop(LoopType.fm, 48, Pragma.n),
-#Loop(LoopType.row, 1, Pragma.n),
-#Loop(LoopType.col, 55, Pragma.n),
-#
-#          Loop(LoopType.kern, 256, Pragma.n),
-#          Loop(LoopType.row, 55, Pragma.n),
-#          Loop(LoopType.col, 55, Pragma.n),
-#
-#          ]
+        tiling = [Loop(LoopType.row, 5, Pragma.n),
+                  Loop(LoopType.col, 55, Pragma.n),
+                  Loop(LoopType.fm, 1, Pragma.n),
+                  Loop(LoopType.kern, i, Pragma.n),
+        
+                
+                Loop(LoopType.row, 55, Pragma.n),
+                Loop(LoopType.col, 55, Pragma.n),
+                Loop(LoopType.kern, ii, Pragma.n),
+                Loop(LoopType.fm, 24, Pragma.n),
+        
+                  
+                  Loop(LoopType.kern, 256, Pragma.n),
+                  Loop(LoopType.row, 55, Pragma.n),
+                  Loop(LoopType.col, 55, Pragma.n),
+                    Loop(LoopType.fm, 48, Pragma.n)
+        
+                  ]
+
 
 #tiling = [Loop(LoopType.fm, 48, Pragma.n),
 ##          Loop(LoopType.row, 4, Pragma.n),
@@ -460,13 +527,14 @@ optimizer.Optimize()
 #          Loop(LoopType.col, 55, Pragma.n),
 #
 #          ]
-#
-#buff = calcBuffers(tiling, dian.archU + dian.archP)  
-#buff.concatBuff(dian.buff)
-#
-#currEnergy = calcEnergy(buff, AlexNet2, EnergyModel())
-#print buff
-#print currEnergy
+
+        buff = calcBuffers(tiling, dian.archU, AlexNet2)  
+        buff.concatBuff(dian.buff)
+        
+        currEnergy = calcEnergy(buff, AlexNet2, EnergyModel())
+        printTile(tiling,1)
+        print buff
+        print ii, i, currEnergy, sum(buff.Bin)+sum(buff.Bkern)+sum(buff.Bout)
 
 
 #f.close()

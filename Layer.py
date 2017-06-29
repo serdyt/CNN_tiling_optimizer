@@ -1,6 +1,6 @@
 from LoopType import LoopType
 
-class Layer:
+class Layer(object):
     
     def __init__ (self, name="AlexNet1", X=227, Y=227, fm=3, kern=46, dx=3, dy=3, stride=1):
         self.dx = dx
@@ -12,9 +12,9 @@ class Layer:
         self.kern = kern
         self.stride = stride
         
-        self.dataIn = self.X * self.Y * self.fm
-        self.dataKern = self.dx * self.dy * self.kern * self.fm
-        self.dataOut = (self.X - self.dx + 1) * (self.Y - self.dy + 1) * self.fm
+#        self.dataIn = self.X * self.Y * self.fm
+#        self.dataKern = self.dx * self.dy * self.kern * self.fm
+#        self.dataOut = (self.X - self.dx + 1) * (self.Y - self.dy + 1) * self.fm
 
     def getMaxLoopSize(self, loopType):
         return {LoopType.fm:self.fm,
