@@ -1,7 +1,7 @@
 from math import ceil
 from operator import add, mul
 
-from LoopType import LoopType
+from LoopType import LoopType, RowCol
 from Model import *
 
 class Buffers(object):
@@ -29,10 +29,19 @@ class Buffers(object):
         usedData = [1]*len(LoopType)
         for i in LoopType:
             rawData = [ x for x in left if x.type == i ]
-            usedData[i.value] = 1 if len(rawData) == 0 else rawData[-1].size
+            if (len(rawData) == 0):
+                if (i == LoopType.rowcol):
+                    usedData[i.value] = RowCol(1,1)
+                else:
+                    usedData[i.value] = 1         
+            else:
+                usedData[i.value] = rawData[-1].size
         return usedData
         
     def concatBuff(self, buff):
+#        print self
+#        print buff        
+        
         self.Bin = map(max, self.Bin, buff.Bin)
         self.Bout = map(max, self.Bout, buff.Bout)
         self.Bkern = map(max, self.Bkern, buff.Bkern)
@@ -41,20 +50,19 @@ class Buffers(object):
         self.RRout = map(mul, self.RRout, buff.RRout)
         self.RRkern = map(mul, self.RRkern, buff.RRkern)
             
-    def calcBuffSizeRR(self, left, loop, arch):
+    def calcBuffSizeRR(self, left, loop, archU, archP):
         # TODO: Move RRout*2 to Buffers (it is in calcEnergy now)
     
         # avoid unnececary computations
         if loop.size == 1:
             return
     
-        level = len([x.type for x in left if x.type == loop.type ])
+        level = len([x.type for x in archP + left if x.type == loop.type ])
         if level < 0 and level > 2:
             print "WTF", level, loop
             raise Exception('Too many loop levels') 
 
-#        print left, loop, arch
-        usedData = self.calcUsedData(arch+left, loop)
+        usedData = self.calcUsedData(archU+archP+left, loop)
 
         # avoid unnececary computations
         # this would generate a bufer with RR=1
@@ -64,18 +72,18 @@ class Buffers(object):
         # calc buffer size only for local buffers
         if level < 2:
             if loop.type == LoopType.kern:
-                self.Bin[level] = kernBuff( usedData[LoopType.row.value], 
+                self.Bin[level] = kernBuff( usedData[LoopType.rowcol.value].row, 
                                             usedData[LoopType.dx.value], 
-                                            usedData[LoopType.col.value], 
+                                            usedData[LoopType.rowcol.value].col, 
                                             usedData[LoopType.dy.value], 
                                             usedData[LoopType.fm.value])
                                             
             elif loop.type == LoopType.fm:
-                self.Bout[level] = fmBuff(  usedData[LoopType.row.value],
-                                            usedData[LoopType.col.value],
+                self.Bout[level] = fmBuff(  usedData[LoopType.rowcol.value].row,
+                                            usedData[LoopType.rowcol.value].col,
                                             usedData[LoopType.kern.value])
                                             
-            elif (loop.type == LoopType.row or loop.type == LoopType.col):
+            elif loop.type == LoopType.rowcol:
                 self.Bkern[level] = rowcolBuff( usedData[LoopType.kern.value],
                                                 usedData[LoopType.fm.value],
                                                 usedData[LoopType.dx.value],
@@ -83,9 +91,9 @@ class Buffers(object):
                                                 
             elif loop.type == LoopType.dx or loop.type == LoopType.dy:
                 self.Bin[level], self.Bout[level] = \
-                                   dxdyBuff(usedData[LoopType.col.value],
+                                   dxdyBuff(usedData[LoopType.rowcol.value].col,
                                             usedData[LoopType.dx.value],
-                                            usedData[LoopType.row.value],
+                                            usedData[LoopType.rowcol.value].row,
                                             usedData[LoopType.dy.value],                                
                                             usedData[LoopType.fm.value],
                                             usedData[LoopType.kern.value] )
@@ -99,26 +107,25 @@ class Buffers(object):
                 self.RRout[level] *= fmRR(  loop.size,
                                             usedData[LoopType.fm.value])
     
-            elif loop.type == LoopType.row:
-                self.RRkern[level] *= rowRR(loop.size,
-                                            usedData[LoopType.row.value])
+            elif loop.type == LoopType.rowcol:
+                self.RRkern[level] *= rowRR(loop.size.row,
+                                            usedData[LoopType.rowcol.value].row)
     
-            elif loop.type == LoopType.col:
-                self.RRkern[level] *= colRR(loop.size,
-                                            usedData[LoopType.col.value])
+                self.RRkern[level] *= colRR(loop.size.col,
+                                            usedData[LoopType.rowcol.value].col)
                            
             #TODO: check levels of dx dy
             elif loop.type == LoopType.dx:
                 rrin, rrout = dxRR(loop.size,
                                     usedData[LoopType.dx.value],
-                                    usedData[LoopType.col.value])
+                                    usedData[LoopType.rowcol.value].col)
                 self.RRin[level] *= rrin
                 self.RRout[level] *= rrout                                                 
         
             elif loop.type == LoopType.dy:
                 rrin, rrout = dyRR(loop.size,
                                    usedData[LoopType.dy.value],
-                                   usedData[LoopType.row.value])
+                                   usedData[LoopType.rowcol.value].row)
                 self.RRin[level] *= rrin
                 self.RRout[level] *= rrout
 

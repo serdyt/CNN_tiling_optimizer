@@ -1,4 +1,4 @@
-from LoopType import LoopType
+from LoopType import LoopType, RowCol
 
 class Layer(object):
     
@@ -19,17 +19,15 @@ class Layer(object):
     def getMaxLoopSize(self, loopType):
         return {LoopType.fm:self.fm,
                 LoopType.kern:self.kern,
-                LoopType.col:self.X,
-                LoopType.row:self.Y,
+                LoopType.rowcol:RowCol(self.Y, self.X),
                 LoopType.dx:self.dx,
                 LoopType.dy:self.dy                
                 }[loopType]
 
     def getMaxLoopSizeByIndex(self, index):
-        return {0:self.fm,
+        return {0:RowCol(self.Y, self.X),
                 1:self.kern,
-                2:self.X,
-                3:self.Y,
-                4:self.dx,
-                5:self.dy                
+                2:self.fm,
+                3:self.dx,
+                4:self.dy                
                 }[index]
