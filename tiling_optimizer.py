@@ -17,7 +17,7 @@ from EenrgyModel import EnergyModel
 from LoopType import LoopType, Loop, RowCol
 from Buffers import Buffers
 from Layer import Layer
-from HwTemplate import DiaNNao, Pragma, CNP
+from HwTemplate import *
 from Model import *
 
 #netFileName = sys.argv[1]
@@ -76,7 +76,8 @@ class TemplateOptimizer(object):
 #                         [LoopType.row,1],[LoopType.col,1],[LoopType.kern,1],[LoopType.row,1],[LoopType.col,1] ]
  
 #       CNP template
-#        self.hwTemplate.archP = [Loop(LoopType.rowcol, RowCol(1,1), Pragma.p), Loop(LoopType.fm, 1, Pragma.p)]
+        self.hwTemplate.archU = [Loop(LoopType.dx, 5, Pragma.u), Loop(LoopType.dy, 5, Pragma.u)]
+        self.hwTemplate.archP = [Loop(LoopType.rowcol, RowCol(1,1), Pragma.p)]
 
         tiling = [  Loop(LoopType.fm, 1, Pragma.n),
                     Loop(LoopType.kern, 1, Pragma.n),
@@ -90,6 +91,20 @@ class TemplateOptimizer(object):
                     Loop(LoopType.fm, 48, Pragma.n)
         
                   ] 
+
+
+#       Eyeriss template
+#        tiling = [  Loop(LoopType.kern, 1, Pragma.n),
+#        
+#                    Loop(LoopType.rowcol, RowCol(55,55), Pragma.n),
+#                    Loop(LoopType.fm, 1, Pragma.n),
+#                    Loop(LoopType.kern, 32, Pragma.n),                    
+#                              
+#                    Loop(LoopType.kern, 256, Pragma.n),
+#                    Loop(LoopType.rowcol, RowCol(55,55), Pragma.n),
+#                    Loop(LoopType.fm, 48, Pragma.n)
+#        
+#                  ] 
         
         for tile in itertools.permutations(tiling):
 #            skip permutations where two neighbours have the same loop type
@@ -127,22 +142,29 @@ class TemplateOptimizer(object):
             print "Time ", time.clock() - t1
             sys.exit()
             
+    def copyTilingBest(self, tile):
+        self.tilingBest = []
+        for loop in tile:
+            if (loop.type == LoopType.rowcol):
+                self.tilingBest.append(Loop(loop.type, RowCol(loop.size.row, loop.size.col), loop.pragma))
+            else:
+                self.tilingBest.append(Loop(loop.type, loop.size, loop.pragma))
+            
     def OptimizeTile (self, tiling):   
         
-        self.buffBest = self.calcBuffers(tiling)  
-        self.buffBest.concatBuff(self.hwTemplate.calcBufferSize())
+        self.buffBest = self.hwTemplate.calcBuffers(tiling, self.layer)
         
         if not self.buffFitMem(self.buffBest):
             
-            print self.calcEnergy(self.buffBest)
+            print self.hwTemplate.calcEnergy(self.buffBest, self.energyModel)
             print self.buffBest
             print "The layer cannot fit hardware!"
             return        
                       
-        self.energyBest = self.calcEnergy(self.buffBest)
+        self.energyBest = self.hwTemplate.calcEnergy(self.buffBest, self.energyModel)
         
-        self.tilingBest = self.hwTemplate.archU + self.hwTemplate.archP + list(tiling)
-           
+        self.copyTilingBest(self.hwTemplate.archU + self.hwTemplate.archP + list(tiling))        
+        
         tiledArch = self.hwTemplate.archP + list(tiling)
         
         loopIndexByType = []
@@ -150,29 +172,44 @@ class TemplateOptimizer(object):
             loopIndexByType.append([i for i,x in enumerate(tiledArch) if x.type == loop])
 
         iterationCounter = 0
-#        t2 = time.clock()
-        
+        t2 = time.clock()
         # Pragma.u loops alwasy occupy all possible MACs
-        
-        maxArchUvalues = [self.layer.getMaxLoopSize(x.type) for x in self.hwTemplate.archU]
-        minArchUvalues = [self.layer.getMaxLoopSize(x.type) if x.type == LoopType.dx or x.type == LoopType.dy else 1 for x in self.hwTemplate.archU]
-                         
-        for ALUlist in self.ALUperm(self.hwTemplate.numU, self.hwRestrictions.MAC, self.hwRestrictions.MAC, maxArchUvalues, minArchUvalues):
+        self.hwTemplate.MACRestrictions(self.layer)
+        for ALUlist in self.hwTemplate.ALUperm(self.hwTemplate.numU, self.hwRestrictions.MAC, self.hwRestrictions.MAC):
             self.hwTemplate.setALU(ALUlist)
             
             # find minimal value for each loop type from archU
-            minLoopValues = [RowCol(1,1)]
-            minLoopValues += [1]*(len(LoopType)-1)
+            minLoopValues = [1]*len(LoopType)
+            for i in LoopType:
+                if i == LoopType.rowcol:
+                    minLoopValues[i.value] = RowCol(1,1)
+                    break
+            
             for loop in self.hwTemplate.archU:
-                minLoopValues[loop.type.value] = loop.size
+                if (loop.type == LoopType.rowcol):
+                    minLoopValues[loop.type.value] = RowCol(loop.size.row, loop.size.col)
+                else:
+                    minLoopValues[loop.type.value] = loop.size
+                    
+            minLoopValues[LoopType.dx.value] = self.layer.dx
+            minLoopValues[LoopType.dy.value] = self.layer.dy
                 
-                # update initial state of tiledArch to be minLoopValue
-                for i, archLoop in enumerate(tiledArch):
-                    if archLoop.type == loop.type:
-                        if archLoop.type in [x.type for x in tiledArch[i+1:]]:
-                            tiledArch[i].size = loop.size
+                
+            # update initial state of tiledArch to be minLoopValue except of 3 last loops, which have the max value
+            for i, loop in enumerate(tiledArch[0:-3]):
+                if loop.type == LoopType.rowcol:
+                    tiledArch[i].size.row = minLoopValues[loop.type.value].row
+                    tiledArch[i].size.col = minLoopValues[loop.type.value].col
+                else:
+                    tiledArch[i].size = minLoopValues[loop.type.value]                   
+                    
+#                for i, archLoop in enumerate(tiledArch):
+#                    if archLoop.type == loop.type:
+#                        if archLoop.type in [x.type for x in tiledArch[i+1:]]:
+#                            tiledArch[i].size = loop.size
                         
 #            print "ALUperm", iterationCounter, " took: ", time.clock() - t2
+#            printTile(self.hwTemplate.archU + tiledArch, 1)
 #            t2 = time.clock()
             currGroup = 0
             
@@ -192,12 +229,11 @@ class TemplateOptimizer(object):
 #                    printTile(self.hwTemplate.archU +tiledArch, 1)
                     iterationCounter += 1
 #                    print 'iteration ', iterationCounter
-#                    if iterationCounter > 50000:
-#                        sys.exit()
+#                    if iterationCounter > 500000:
+#                        return
     
                     self.hwTemplate.archP = tiledArch[:len(self.hwTemplate.archP)]
-                    currBuff = self.calcBuffers(tiledArch[len(self.hwTemplate.archP):])
-                    currBuff.concatBuff(self.hwTemplate.calcBufferSize())
+                    currBuff = self.hwTemplate.calcBuffers(tiledArch[len(self.hwTemplate.archP):], self.layer)
                     
 #                    print currBuff
 
@@ -207,15 +243,16 @@ class TemplateOptimizer(object):
 #                        print 'buff overflow'
                         continue
                     
-                    currEnergy = self.calcEnergy(currBuff)
+                    currEnergy = self.hwTemplate.calcEnergy(currBuff, self.energyModel)
                     printTile(self.hwTemplate.archU +tiledArch, 3, currEnergy, sum(currBuff.Bin)+sum(currBuff.Bkern)+sum(currBuff.Bout))
 #                    print currEnergy
                     if currEnergy < self.energyBest:
                         self.energyBest = currEnergy
                         del self.buffBest
                         self.buffBest = currBuff
-                        del self.tilingBest
-                        self.tilingBest = self.hwTemplate.archU + tiledArch
+#                        del self.tilingBest
+#                        self.tilingBest = self.hwTemplate.archU + tiledArch
+                        self.copyTilingBest(self.hwTemplate.archU + tiledArch)
 #                        print 'new best! '
 #                        printTile(self.hwTemplate.archU + tiledArch,1)
 #                        print self.energyBest
@@ -238,69 +275,6 @@ class TemplateOptimizer(object):
         else:
             return True
             
-            
-    def calcEnergy(self, buff):       
-        res = 0
-        for rr in [buff.RRin, buff.RRkern, buff.RRout]:
-            res += rr[2]*self.energyModel.DRAM
-            if rr[1] != 1:
-                res += rr[2]*rr[1]*self.energyModel.buff 
-            if rr[0] != 1:
-                res += rr[2]*rr[1]*rr[0]*self.energyModel.RF
-    
-        return res
-        
-    def calcBuffers(self, tiledTemplate):
-        buff = Buffers()
-        for index in xrange(len(tiledTemplate)):
-            loop = tiledTemplate[index]          
-            left = tiledTemplate[:index]
-            buff.calcBuffSizeRR(left, loop, self.hwTemplate.archU, self.hwTemplate.archP)
-
-        kern = [x.size for x in tiledTemplate if x.type == LoopType.kern]
-        
-        buff.RRin[2] = kernRR(self.layer.kern, kern[-2])
-                
-        fm = [x.size for x in tiledTemplate if x.type == LoopType.fm]
-        buff.RRout[2] = fmRR(self.layer.fm, fm[-2])
-        
-        rowcol = [x.size for x in tiledTemplate if x.type == LoopType.rowcol]
-        buff.RRkern[2] = rowRR(self.layer.Y, rowcol[-2].row) * colRR(self.layer.X, rowcol[-2].col)
-        
-        for i in [0,1]:
-            buff.RRout[i] *= 2
-            buff.RRout[i] -= 1
-                
-
-        buff.RRout[2] *= 2 
-        buff.RRout[2] -= 1
-            
-        return buff
-        
-    def ALUperm(self, depth, MAC, maxMAC, maxlist, minlist):
-        if depth == 1:
-            if (MAC < minlist[0]):
-                pass
-            else:
-                yield [min(MAC, maxlist[0])]
-        else:
-            for i in self.divisorsFloor(maxMAC, minlist[0], maxlist[0]):
-                for perm in self.ALUperm(depth-1, int(floor(MAC/float(i))), maxMAC, maxlist[1:], minlist[1:]):
-                    yield [i] + perm
-                        
-    def divisorsFloor(self, x, mini, maxi):
-        res = [maxi]
-        for i in xrange(1, x+1):
-            t = floor(x/float(i))
-            if (t >= mini and t <= maxi):
-                if len(res) == 0:
-                    res.append(int(t))
-                else:
-                    if t != res[-1]:
-                        res.append(int(t))
-                
-        return res
-    
     def nextDivisor(self, curr, maxi):
         for i in xrange(maxi, 0, -1):
             t = ceil(maxi/float(i))
@@ -393,8 +367,7 @@ def maxLoop(a,b):
         return a
     else:
         return b
-    
-        
+
         
 #    printBuff(buff)
             
@@ -403,100 +376,63 @@ def maxLoop(a,b):
 
 ###############################################################################
 
-sys.stdout = open('CNP3000_RowCol_update', 'w')
+sys.stdout = open('CNP5000', 'w')
 ##
 ###AlexNet1 = Layer("AlexNet1")
 AlexNet2 = Layer("AlexNet2", X=55, Y=55, fm=48, kern=256, dx=5, dy=5, stride=1)
 ##
-zinq=HWrestrictions((3000,1), 256)
+zinq=HWrestrictions((5000,1), 256)
 #
 ##f = open(sys.argv[2], 'wb')
 ##writer = csv.writer(f, delimiter=',', quotechar=',')
 ##writer.writerow(('Template','Layer'))
-##
-optimizer = TemplateOptimizer(CNP(), AlexNet2, zinq)
+#
+template = CNP()
+#template = Eyeriss()
+#
+optimizer = TemplateOptimizer(template, AlexNet2, zinq)
 optimizer.Optimize()
-
-
-#def calcBuffers(tiledTemplate, archU, archP, layer):
-#        buff = Buffers()
-#        for index in xrange(len(tiledTemplate)):
-#            loop = tiledTemplate[index]          
-#            left = tiledTemplate[:index]
-#            buff.calcBuffSizeRR(left, loop, archU, archP)
-#
-#        kern = [x.size for x in tiledTemplate if x.type == LoopType.kern]
-#        buff.RRin[2] = kernRR(layer.kern, kern[-2])
-#                
-#        fm = [x.size for x in tiledTemplate if x.type == LoopType.fm]
-#        buff.RRout[2] = fmRR(layer.fm, fm[-2])
-#        
-#        rowcol = [x.size for x in tiledTemplate if x.type == LoopType.rowcol]
-#        buff.RRkern[2] = rowRR(layer.Y, rowcol[-2].row) * colRR(layer.X, rowcol[-2].col)
-#        
-#        for i in [0,1]:
-#            buff.RRout[i] *= 2
-#            buff.RRout[i] -= 1
-#                
-#
-#        buff.RRout[2] *= 2 
-#        buff.RRout[2] -= 1
-#            
-#        return buff
-#
-#
-#def calcEnergy(buff, layer, energyModel):
-#    res = 0        
-#        
-#    for rr in [buff.RRin, buff.RRkern, buff.RRout]:
-#        res += rr[2]*energyModel.DRAM
-#        if rr[1] != 1:
-#            res += rr[2]*rr[1]*energyModel.buff 
-#        if rr[0] != 1:
-#            res += rr[2]*rr[1]*rr[0]*energyModel.RF
-#
-#    return res
 #    
-#    
-#from test import divisorsCeil
-#
-##dian = DiaNNao()
-##dian.archU = [Loop(LoopType.fm, 4, Pragma.u), Loop(LoopType.kern, 4, Pragma.u)]
-##dian.archU = [Loop(LoopType.dx, 5, Pragma.u), Loop(LoopType.dy, 5, Pragma.u), Loop(LoopType.kern, 4, Pragma.u )]
-#
+    
+#dian = DiaNNao()
+#dian.archU = [Loop(LoopType.fm, 4, Pragma.u), Loop(LoopType.kern, 4, Pragma.u)]
+#dian.archU = [Loop(LoopType.dx, 5, Pragma.u), Loop(LoopType.dy, 5, Pragma.u), Loop(LoopType.kern, 4, Pragma.u )]
+
 #dian = CNP()
-#
 #dian.archU = [Loop(LoopType.dx, 5, Pragma.u), Loop(LoopType.dy, 5, Pragma.u)]
+#dian.archP = [Loop(LoopType.rowcol, RowCol(7,10), Pragma.p)]
+#
+##dian = Eyeriss()
+##dian.archU = [Loop(LoopType.dy, 5, Pragma.u), Loop(LoopType.rowcol, RowCol(28,1), Pragma.u), Loop(LoopType.kern, 1, Pragma.u)]
+##dian.archP =[Loop(LoopType.rowcol, RowCol(28,1), Pragma.p), Loop(LoopType.dx, 5, Pragma.p), Loop(LoopType.fm, 3, Pragma.p)]
+#
+##from test import divisorsCeil
+##for ii1 in divisorsCeil(1, 55):
+##    for i1 in divisorsCeil(1, 55):
+##        
+##        for i in divisorsCeil(1, i1):
+##            for ii in divisorsCeil(1, ii1):
 #
 #
-#for ii1 in divisorsCeil(1, 55):
-#    for i1 in divisorsCeil(1, 55):
-#        
-#        for i in divisorsCeil(1, i1):
-#            for ii in divisorsCeil(1, ii1):
+#tiling = [      Loop(LoopType.fm, 4, Pragma.n),
+#Loop(LoopType.kern, 43, Pragma.n),
 #
-#                dian.archP = [Loop(LoopType.rowcol, RowCol(i,ii), Pragma.p)]
-#                
-#                tiling = [  Loop(LoopType.fm, 6, Pragma.p),
-#                            Loop(LoopType.kern, 16, Pragma.n),
-#                
-#                            Loop(LoopType.rowcol, RowCol(i1,ii1), Pragma.n),
-#                            Loop(LoopType.fm, 6, Pragma.n),
-#                            Loop(LoopType.kern, 16, Pragma.n),                    
-#                                      
-#                            Loop(LoopType.kern, 256, Pragma.n),
-#                            Loop(LoopType.rowcol, RowCol(55,55), Pragma.n),
-#                            Loop(LoopType.fm, 48, Pragma.n)
-#                
-#                          ]
-#                
-#                buff = calcBuffers(tiling, dian.archU, dian.archP, AlexNet2)  
-#                buff.concatBuff(dian.calcBufferSize())
-#                
-#                currEnergy = calcEnergy(buff, AlexNet2, EnergyModel())
-##                printTile(dian.archU + tiling,2)
-##                print buff
-#                print (ii, i), (ii1, i1), currEnergy, sum(buff.Bin)+sum(buff.Bkern)+sum(buff.Bout)
-#        #        print currEnergy, sum(buff.Bin)+sum(buff.Bkern)+sum(buff.Bout)
+#            Loop(LoopType.rowcol, RowCol(55,55), Pragma.n),
+#            Loop(LoopType.fm, 4, Pragma.n),
+#            Loop(LoopType.kern, 43, Pragma.n),                    
+#            
+#            Loop(LoopType.rowcol, RowCol(55,55), Pragma.n),
+#            Loop(LoopType.kern, 256, Pragma.n),
+#            Loop(LoopType.fm, 48, Pragma.n)
+#
+#          ]
+#
+#buff = dian.calcBuffers(tiling, AlexNet2)  
+#
+#currEnergy = dian.calcEnergy(buff, EnergyModel())
+#printTile(dian.archU + dian.archP + tiling,1)
+#print buff
+##print (ii, i), (ii1, i1), currEnergy, sum(buff.Bin)+sum(buff.Bkern)+sum(buff.Bout)
+#print currEnergy, sum(buff.Bin)+sum(buff.Bkern)+sum(buff.Bout)
 
 #f.close()

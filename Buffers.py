@@ -20,28 +20,32 @@ class Buffers(object):
 #        self.DRin = [0,0,0]
 #        self.DRkern = [0,0,0]
 #        self.DRout = [0,0,0]
+        
+        self.usedData = []
 #                
     def totalSpace(self):
         return sum(self.Bin) + sum(self.Bkern) + sum(self.Bout)
                     
-    def calcUsedData(self, left,loop):
+    def initUsedData(self, left,loop):
         #scan all the data to the left to find the amount of each data type being used
-        usedData = [1]*len(LoopType)
+        self.usedData = [1]*len(LoopType)
+        for i in LoopType:
+            if (i == LoopType.rowcol):
+                self.usedData[i.value] = RowCol(1,1)
+        
         for i in LoopType:
             rawData = [ x for x in left if x.type == i ]
-            if (len(rawData) == 0):
+
+            if len(rawData) > 0:
                 if (i == LoopType.rowcol):
-                    usedData[i.value] = RowCol(1,1)
+                    self.usedData[i.value].row = rawData[-1].size.row    
+                    self.usedData[i.value].col = rawData[-1].size.col
                 else:
-                    usedData[i.value] = 1         
-            else:
-                usedData[i.value] = rawData[-1].size
-        return usedData
+                    self.usedData[i.value] = rawData[-1].size
+
+        return self.usedData
         
     def concatBuff(self, buff):
-#        print self
-#        print buff        
-        
         self.Bin = map(max, self.Bin, buff.Bin)
         self.Bout = map(max, self.Bout, buff.Bout)
         self.Bkern = map(max, self.Bkern, buff.Bkern)
@@ -53,81 +57,88 @@ class Buffers(object):
     def calcBuffSizeRR(self, left, loop, archU, archP):
         # TODO: Move RRout*2 to Buffers (it is in calcEnergy now)
     
+        if self.usedData == []:
+            self.initUsedData(archU+archP+left, loop)
+        else:
+            if (left[-1].type == LoopType.rowcol):
+                self.usedData[left[-1].type.value].row = left[-1].size.row
+                self.usedData[left[-1].type.value].col = left[-1].size.col
+            else:                    
+                self.usedData[left[-1].type.value] = left[-1].size
+                    
         # avoid unnececary computations
         if loop.size == 1:
+            return
+            
+        # avoid unnececary computations
+        # this would generate a bufer with RR=1
+        if loop.size == self.usedData[loop.type.value]:
             return
     
         level = len([x.type for x in archP + left if x.type == loop.type ])
         if level < 0 and level > 2:
             print "WTF", level, loop
             raise Exception('Too many loop levels') 
-
-        usedData = self.calcUsedData(archU+archP+left, loop)
-
-        # avoid unnececary computations
-        # this would generate a bufer with RR=1
-        if loop.size == usedData[loop.type.value]:
-            return
-
+        
         # calc buffer size only for local buffers
         if level < 2:
             if loop.type == LoopType.kern:
-                self.Bin[level] = kernBuff( usedData[LoopType.rowcol.value].row, 
-                                            usedData[LoopType.dx.value], 
-                                            usedData[LoopType.rowcol.value].col, 
-                                            usedData[LoopType.dy.value], 
-                                            usedData[LoopType.fm.value])
+                self.Bin[level] = kernBuff( self.usedData[LoopType.rowcol.value].row, 
+                                            self.usedData[LoopType.dx.value], 
+                                            self.usedData[LoopType.rowcol.value].col, 
+                                            self.usedData[LoopType.dy.value], 
+                                            self.usedData[LoopType.fm.value])
                                             
             elif loop.type == LoopType.fm:
-                self.Bout[level] = fmBuff(  usedData[LoopType.rowcol.value].row,
-                                            usedData[LoopType.rowcol.value].col,
-                                            usedData[LoopType.kern.value])
+                self.Bout[level] = fmBuff(  self.usedData[LoopType.rowcol.value].row,
+                                            self.usedData[LoopType.rowcol.value].col,
+                                            self.usedData[LoopType.kern.value])
                                             
             elif loop.type == LoopType.rowcol:
-                self.Bkern[level] = rowcolBuff( usedData[LoopType.kern.value],
-                                                usedData[LoopType.fm.value],
-                                                usedData[LoopType.dx.value],
-                                                usedData[LoopType.dy.value])
+                self.Bkern[level] = rowcolBuff( self.usedData[LoopType.kern.value],
+                                                self.usedData[LoopType.fm.value],
+                                                self.usedData[LoopType.dx.value],
+                                                self.usedData[LoopType.dy.value])
                                                 
             elif loop.type == LoopType.dx or loop.type == LoopType.dy:
                 self.Bin[level], self.Bout[level] = \
-                                   dxdyBuff(usedData[LoopType.rowcol.value].col,
-                                            usedData[LoopType.dx.value],
-                                            usedData[LoopType.rowcol.value].row,
-                                            usedData[LoopType.dy.value],                                
-                                            usedData[LoopType.fm.value],
-                                            usedData[LoopType.kern.value] )
+                                   dxdyBuff(self.usedData[LoopType.rowcol.value].col,
+                                            self.usedData[LoopType.dx.value],
+                                            self.usedData[LoopType.rowcol.value].row,
+                                            self.usedData[LoopType.dy.value],                                
+                                            self.usedData[LoopType.fm.value],
+                                            self.usedData[LoopType.kern.value] )
 
-            # calc RR
-            if loop.type == LoopType.kern:
-                self.RRin[level] *= kernRR( loop.size,
-                                            usedData[LoopType.kern.value])
+        # calc RR
+        if loop.type == LoopType.kern:
+            self.RRin[level] *= kernRR( loop.size,
+                                        self.usedData[LoopType.kern.value])
+
+        elif loop.type == LoopType.fm:
+            self.RRout[level] *= fmRR(  loop.size,
+                                        self.usedData[LoopType.fm.value])
+
+        elif loop.type == LoopType.rowcol:
+            self.RRkern[level] *= rowRR(loop.size.row,
+                                        self.usedData[LoopType.rowcol.value].row)
+
+            self.RRkern[level] *= colRR(loop.size.col,
+                                        self.usedData[LoopType.rowcol.value].col)
+                       
+        #TODO: check levels of dx dy
+        elif loop.type == LoopType.dx:
+            rrin, rrout = dxRR(loop.size,
+                                self.usedData[LoopType.dx.value],
+                                self.usedData[LoopType.rowcol.value].col)
+            self.RRin[level] *= rrin
+            self.RRout[level] *= rrout                                                 
     
-            elif loop.type == LoopType.fm:
-                self.RRout[level] *= fmRR(  loop.size,
-                                            usedData[LoopType.fm.value])
-    
-            elif loop.type == LoopType.rowcol:
-                self.RRkern[level] *= rowRR(loop.size.row,
-                                            usedData[LoopType.rowcol.value].row)
-    
-                self.RRkern[level] *= colRR(loop.size.col,
-                                            usedData[LoopType.rowcol.value].col)
-                           
-            #TODO: check levels of dx dy
-            elif loop.type == LoopType.dx:
-                rrin, rrout = dxRR(loop.size,
-                                    usedData[LoopType.dx.value],
-                                    usedData[LoopType.rowcol.value].col)
-                self.RRin[level] *= rrin
-                self.RRout[level] *= rrout                                                 
-        
-            elif loop.type == LoopType.dy:
-                rrin, rrout = dyRR(loop.size,
-                                   usedData[LoopType.dy.value],
-                                   usedData[LoopType.rowcol.value].row)
-                self.RRin[level] *= rrin
-                self.RRout[level] *= rrout
+        elif loop.type == LoopType.dy:
+            rrin, rrout = dyRR(loop.size,
+                               self.usedData[LoopType.dy.value],
+                               self.usedData[LoopType.rowcol.value].row)
+            self.RRin[level] *= rrin
+            self.RRout[level] *= rrout
 
 #    def mergeBuff(self, hwRestrictions):
 #        for b,rr in zip([self.Bin, self.RRin, self.Bkern], [self.RRkern, self.Bout, self.RRout]):
@@ -139,9 +150,20 @@ class Buffers(object):
 #            x.sort(key=lambda v: v!= 0)            
            
     def __str__ (self):
-        return "Bin " + str(self.Bin) + str(self.RRin) + " \n" + \
-               "Bkern " + str(self.Bkern) + str(self.RRkern) + " \n" + \
-               "Bout " + str(self.Bout) + str(self.RRout)  #+ "\n" + \
+        return "Bin " + str(self.Bin) + str(self.RRin) + str(reduce(mul, self.RRin)) + " \n" + \
+               "Bkern " + str(self.Bkern) + str(self.RRkern) + str(reduce(mul, self.RRkern)) + " \n" + \
+               "Bout " + str(self.Bout) + str(self.RRout) + str(reduce(mul, self.RRout))  #+ "\n" + \
 #               "DRin " + str(self.DRout) + str([b*r for b,r in zip(self.Bin,self.RRin)]) + "\n" + \
 #               "DRkern " + str(self.DRkern) + str([b*r for b,r in zip(self.Bkern,self.RRkern)]) + "\n" + \
 #               "DRout "+ str(self.DRin) + str([b*r for b,r in zip(self.Bout,self.RRout)]) + "\n"
+
+def printTile (tile, i=2, energy=0, buff=0):
+    if i == 1:
+        print  [(elm.type.name, elm.size) for elm in tile]
+    elif i == 2:
+        print  [elm.type.name for elm in tile]
+    elif i == 3:
+        lst = [str(elm.size) for elm in tile]
+        print '\t'.join(lst+[str(int(energy))]+[str(buff)])
+    else:
+        print tile

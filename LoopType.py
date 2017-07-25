@@ -8,13 +8,7 @@ RC = recordtype("RowCol", ['row', 'col'])
 class RowCol(RC):
     def __init__(self, row, col):
         super(RowCol, self).__init__(row, col)
-        
-#    def __lt__(self, other):
-#        if (self.col < other.col and self.row < other.row):
-#            return True
-#        else:
-#            return False
-            
+                    
     def __str__(self):
         return str(self.row) + "," + str(self.col)
             
