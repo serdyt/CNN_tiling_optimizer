@@ -102,7 +102,7 @@ class HwTemplate(object):
             res += a*b*c*energyModel.RF
         
         return res
-    
+            
 '''
 Example tempate classes
 '''    
@@ -168,7 +168,41 @@ class CNP (HwTemplate):
         buff.concatBuff(superBuff)        
         
         return buff
+ 
+class CNPfm (HwTemplate):
+    def __init__(self):
+        super(CNPfm, self).__init__(  "CNPfm",
+                                    [Loop(LoopType.dx, 1, Pragma.u), Loop(LoopType.dy, 1, Pragma.u), Loop(LoopType.fm, 1, Pragma.u)], 
+                                    [Loop(LoopType.rowcol, RowCol(1,1), Pragma.p)]
+                                 )
+                                 
+    def calcBuffers(self, tiledTemplate, layer):
+        superBuff = super(CNPfm, self).calcBuffers(tiledTemplate, layer)
+
+        buff = Buffers()
         
+        buff.Bin[0] = 1
+        buff.RRin[0] = 1
+        
+        # Bkern[0] = dx * dy * fm
+        buff.Bkern[0] = self.archU[0].size * self.archU[1].size * self.archU[2].size
+        # RRkern[0] = row*(col+dx-1)
+        buff.RRkern[0] = self.archP[0].size.row * self.archP[0].size.col
+        
+        # Bout[0] = dx * dy
+        buff.Bout[0] = self.archU[0].size * self.archU[1].size
+        # RRout[0] = dx 
+        buff.RRout[0] = self.archU[0].size
+        
+        # Bout[1] = col * (dy-1)
+        buff.Bout[1] = self.archP[0].size.col * (self.archU[1].size - 1)
+        # RRout[1] = dy
+        buff.RRout[1] = self.archU[1].size 
+        
+        buff.concatBuff(superBuff)        
+        
+        return buff
+       
 class Eyeriss (HwTemplate):
     def __init__(self):
         super(Eyeriss, self).__init__(  "Eyeriss",

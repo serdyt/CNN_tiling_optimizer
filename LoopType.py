@@ -11,6 +11,8 @@ class RowCol(RC):
                     
     def __str__(self):
         return str(self.row) + "," + str(self.col)
+        
+OptArgs = recordtype("OptArgs", ["tiling", "hwTemplate", "layer", "energyModel", "hwRestrictions"])
             
 class LoopType(Enum):
     rowcol = 0
