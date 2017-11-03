@@ -19,4 +19,10 @@ class LoopType(Enum):
     kern = 1
     fm = 2
     dx = 3
-    dy = 4   
+    dy = 4
+    
+class Pragma(Enum):
+    n = 0 # normal
+    u = 1 # unroll
+    p = 2 # pipeline
+    s = 3 # skip - to prevent loop increment - to prevent an extrta buffer layer

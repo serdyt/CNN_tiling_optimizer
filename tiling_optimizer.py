@@ -16,12 +16,12 @@ from math import ceil, floor
 from EenrgyModel import EnergyModel
 from LoopType import LoopType, Loop, RowCol, OptArgs
 from Buffers import Buffers
-from Layer import Layer
+from Layer import *
 from HwTemplate import *
 from Model import *
 import copy
 
-from multiprocessing import Pool
+from multiprocessing import Pool, cpu_count
 import os as os
 
 #netFileName = sys.argv[1]
@@ -56,10 +56,7 @@ class TemplateOptimizer(object):
     
         # add loops missing from archP
         tiling = [Loop(x,1,Pragma.n) for x in LoopType if (x != LoopType.dx and x != LoopType.dy and \
-                x not in [y.type for y in self.hwTemplate.archP])]
-
-#        for i in xrange(self.levels-2):
-#            tiling += [Loop(x,1,Pragma.n) for x in LoopType if (x != LoopType.dx and x != LoopType.dy)]
+                x not in [y.type for y in self.hwTemplate.archP + self.hwTemplate.skipLoop])]
 
         #check whether dx and dy are already in, add them if not  
         if LoopType.dx not in [x.type for x in self.hwTemplate.archU + self.hwTemplate.archP + tiling]:
@@ -67,54 +64,66 @@ class TemplateOptimizer(object):
         if LoopType.dy not in [x.type for x in self.hwTemplate.archU + self.hwTemplate.archP + tiling]:
             tiling = [Loop(LoopType.dy,self.layer.dy,Pragma.n)] + tiling
 
-        t1 = time.clock()
+        t1 = time.time()
 
-        p = Pool(processes = 24)
+        p = Pool(processes = cpu_count())
             
         for tilingBest, buffBest, energyBest in p.imap_unordered(OptimizeTile, self.permutate(tiling)):
-#        pool.imap_unordered(OptimizeTile, self.permutate(tiling))
-#        for args in self.permutate(tiling):
-#            tilingBest, buffBest, energyBest = OptimizeTile(args)
-#        tilingBest, buffBest, energyBest = OptimizeTile(tile, self.hwTemplate, self.layer, self.energyModel, self.hwRestrictions)
-
             printTile(tilingBest, 1)
             print buffBest
             print "Energy ", energyBest
+            
         p.close()
         p.join()
-        print "Time ", time.clock() - t1
+        print "Time ", time.time() - t1
+
+#########################################
+############ single thread ##############
+#########################################
+#        for i in self.permutate(tiling):
+#            OptimizeTile(i)
+        
 
     def permutate(self, tiling):
-        for tile in itertools.permutations(tiling):
-#            skip permutations where two neighbours have the same loop type
-            tiling2 = [Loop(x,1,Pragma.n) for x in LoopType if (x != LoopType.dx and x != LoopType.dy)]
-            for tile2 in itertools.permutations(tiling2):
-                
-                if len(tile) > 0:
-                    if tile[-1].type == tile2[0].type:
-                        continue
+        usedTiles = []
+        archTile = [x.type for x in self.hwTemplate.archP]
+
+        ptile = tiling + [Loop(x,1,Pragma.n) for x in LoopType if (x != LoopType.dx and x != LoopType.dy)]
+        for ctile in itertools.permutations(ptile):
             
-                curtile = list(tile) + list(tile2) + [Loop(x,1,Pragma.n) for x in LoopType if (x != LoopType.dx and x != LoopType.dy)]
-    
-                # init by putting all data to DRAM
-                for index in xrange(len(curtile)):
-                    loopType = curtile[index].type
-                    right = [g.type for g in curtile[index+1:]]
-                    if loopType not in right:
-                        curtile[index].size = self.layer.getMaxLoopSize(loopType)
+            # skip permutations where two neighbours have the same loop type
+            fctile = list(archTile) + [x.type for x in list(ctile)]
+            if any([x == y for x,y in zip(fctile, fctile[1:])]):
+                continue
+
+            
+            if fctile in usedTiles:
+                continue
+            else:
+                usedTiles.append(fctile)
+        
+            curtile = list(ctile) + [Loop(x,1,Pragma.n) for x in LoopType if (x != LoopType.dx and x != LoopType.dy)]
+
+            # init by putting all data to DRAM
+            for index in xrange(len(curtile)):
+                loopType = curtile[index].type
+                right = [g.type for g in curtile[index+1:]]
+                if loopType not in right:
+                    curtile[index].size = self.layer.getMaxLoopSize(loopType)
+                else:
+                    if curtile[index].type == LoopType.rowcol:
+                        curtile[index].size = RowCol(1,1)    
                     else:
-                        if curtile[index].type == LoopType.rowcol:
-                            curtile[index].size = RowCol(1,1)    
-                        else:
-                            curtile[index].size = 1
+                        curtile[index].size = 1
+
                             
-#                print "New Tile"
-#                printTile(curtile,1)
-#                print "hwTemaplate"
-#                printTile(self.hwTemplate.archU,1)
-#                printTile(self.hwTemplate.archP,1)
-                            
-                yield OptArgs(curtile, self.hwTemplate, self.layer, self.energyModel, self.hwRestrictions)
+#            print "New Tile"
+#            printTile(curtile,1)
+#            print "hwTemaplate"
+#            printTile(self.hwTemplate.archU,1)
+#            printTile(self.hwTemplate.archP,1)
+                        
+            yield OptArgs(curtile, self.hwTemplate, self.layer, self.energyModel, self.hwRestrictions)
 
 #**********************************************#
             
@@ -186,21 +195,21 @@ def updateTilingOnBuffOverflow(tiledTemplate, currGroupSlice, currLoopIndex):
                     tiledTemplate[x].size = tiledTemplate[y].size
 
 def OptimizeTile (args):
-#    print os.getpid()    
     tiling = copy.deepcopy(args.tiling)
     hwTemplate = copy.deepcopy(args.hwTemplate)
     layer = args.layer
     energyModel = args.energyModel
     hwRestrictions = args.hwRestrictions
     
+    tiledArch = hwTemplate.archP + list(tiling)
+    printTile(tiledArch, 2)
+    
     buffBest = hwTemplate.calcBuffers(tiling, layer)
-    energyBest = hwTemplate.calcEnergy(buffBest, energyModel)
+    energyBest = hwTemplate.calcEnergy(buffBest, energyModel, layer)
     tilingBest = copyTilingBest(hwTemplate.archU + hwTemplate.archP + list(tiling)) 
     
     if not buffFitMem(buffBest, hwRestrictions):
         return tilingBest, buffBest, energyBest           
-    
-    tiledArch = hwTemplate.archP + list(tiling)
     
     loopIndexByType = []
     for loop in LoopType:
@@ -263,16 +272,13 @@ def OptimizeTile (args):
 
                 hwTemplate.archP = tiledArch[:len(hwTemplate.archP)]
                 currBuff = hwTemplate.calcBuffers(tiledArch[len(hwTemplate.archP):], layer)
-                
-#                    print currBuff
 
                 if not buffFitMem(currBuff, hwRestrictions):
                     updateTilingOnBuffOverflow(tiledArch, loopIndexByType[0:currGroup+1], currLoopIndex)
                     currGroup = 0
-#                        print 'buff overflow'
                     continue
                 
-                currEnergy = hwTemplate.calcEnergy(currBuff, energyModel)
+                currEnergy = hwTemplate.calcEnergy(currBuff, energyModel, layer)
 #                printTile(hwTemplate.archU +tiledArch, 3, currEnergy, sum(currBuff.Bin)+sum(currBuff.Bkern)+sum(currBuff.Bout))
 #                    print currEnergy
                 if currEnergy < energyBest:
@@ -340,36 +346,69 @@ def maxLoop(a,b):
 
 ###############################################################################
 
-#sys.stdout = open('CNP5000', 'w')
-##
-###AlexNet1 = Layer("AlexNet1")
-AlexNet2 = Layer("AlexNet2", X=55, Y=55, fm=48, kern=256, dx=5, dy=5, stride=1)
-##
-zinq=HWrestrictions((10000,1), 256)
-#
-##f = open(sys.argv[2], 'wb')
-##writer = csv.writer(f, delimiter=',', quotechar=',')
-##writer.writerow(('Template','Layer'))
-#
-#template = CNP()
-template = CNPfm()
-#template = Eyeriss()
-#
-optimizer = TemplateOptimizer(template, AlexNet2, zinq)
-optimizer.Optimize()
-#    
+if len(sys.argv) == 5:
+    sys.stdout = open(sys.argv[4], 'w')
     
-#dian = DiaNNao()
-#dian.archU = [Loop(LoopType.fm, 4, Pragma.u), Loop(LoopType.kern, 4, Pragma.u)]
-#dian.archU = [Loop(LoopType.dx, 5, Pragma.u), Loop(LoopType.dy, 5, Pragma.u), Loop(LoopType.kern, 4, Pragma.u )]
+##
+#AlexNet1 = Layer(name="AlexNet1", X=227, Y=227, fm=3, kern=46, dx=3, dy=3, stride=1)
+#AlexNet2 = Layer("AlexNet2", X=55, Y=55, fm=48, kern=256, dx=5, dy=5, stride=1)
+##
+    
+zinq=HWrestrictions((int(sys.argv[3]),1), 256)
 
-#dian = CNP()
-#dian.archU = [Loop(LoopType.dx, 5, Pragma.u), Loop(LoopType.dy, 5, Pragma.u)]
-#dian.archP = [Loop(LoopType.rowcol, RowCol(7,10), Pragma.p)]
+if sys.argv[1] == 'CNP':
+    template = CNP()
+elif sys.argv[1] == 'CNPfm':
+    template = CNPfm()
+elif sys.argv[1] == 'Eyeriss':    
+    template = Eyeriss()
+elif sys.argv[1] == 'DNNweaver':    
+    template = DNNweaver()
+else:
+    raise Exception('''
+Wrong template name
+Check HwTemplaty.py
+Currently implemented: CNP, CNPfm,Eyeriss''')
+    
+if sys.argv[2] == 'AlexNet1':
+    layer = AlexNet1()
+elif sys.argv[2] == 'AlexNet2':
+    layer = AlexNet2()
+elif sys.argv[2] == 'AlexNet3':
+    layer = AlexNet3()    
+else:
+    raise Exception('''
+Wrong layer name
+Check Layer.py''')
+    
+optimizer = TemplateOptimizer(template, layer, zinq)
+optimizer.Optimize()
+
+    
+############################################
+##### Manual testing of a single string#####    
+############################################
+
+#template = DiaNNao()
+#template.archU = [Loop(LoopType.fm, 4, Pragma.u), Loop(LoopType.kern, 4, Pragma.u)]
+#template.archU = [Loop(LoopType.dx, 5, Pragma.u), Loop(LoopType.dy, 5, Pragma.u), Loop(LoopType.kern, 4, Pragma.u )]
+
+#template = CNP()
+#template.archU = [Loop(LoopType.dx, 5, Pragma.u), Loop(LoopType.dy, 5, Pragma.u)]
+#template.archP = [Loop(LoopType.rowcol, RowCol(5,14), Pragma.p)]
 #
-##dian = Eyeriss()
-##dian.archU = [Loop(LoopType.dy, 5, Pragma.u), Loop(LoopType.rowcol, RowCol(28,1), Pragma.u), Loop(LoopType.kern, 1, Pragma.u)]
-##dian.archP =[Loop(LoopType.rowcol, RowCol(28,1), Pragma.p), Loop(LoopType.dx, 5, Pragma.p), Loop(LoopType.fm, 3, Pragma.p)]
+#template = CNPfm()
+#template.archU = [Loop(LoopType.dx, 5, Pragma.u), Loop(LoopType.dy, 5, Pragma.u), Loop(LoopType.fm, 10, Pragma.u)]
+#template.archP = [Loop(LoopType.rowcol, RowCol(7,11), Pragma.p)]
+#
+#template = Eyeriss()
+#template.archU = [Loop(LoopType.dy, 5, Pragma.u), Loop(LoopType.rowcol, RowCol(28,1), Pragma.u), Loop(LoopType.kern, 1, Pragma.u)]
+#template.archP =[Loop(LoopType.rowcol, RowCol(28,1), Pragma.p), Loop(LoopType.dx, 5, Pragma.p), Loop(LoopType.fm, 3, Pragma.p)]
+
+#template = DNNweaver()
+#template.archU = [Loop(LoopType.rowcol, RowCol(1,15), Pragma.u), Loop(LoopType.kern, 16, Pragma.u)]
+#template.archP =[Loop(LoopType.dx, 5, Pragma.p), Loop(LoopType.dy, 5, Pragma.p), Loop(LoopType.rowcol, RowCol(5,55), Pragma.n)]
+#
 #
 ##from test import divisorsCeil
 ##for ii1 in divisorsCeil(1, 55):
@@ -379,25 +418,25 @@ optimizer.Optimize()
 ##            for ii in divisorsCeil(1, ii1):
 #
 #
-#tiling = [      Loop(LoopType.fm, 4, Pragma.n),
-#Loop(LoopType.kern, 43, Pragma.n),
 #
-#            Loop(LoopType.rowcol, RowCol(55,55), Pragma.n),
-#            Loop(LoopType.fm, 4, Pragma.n),
-#            Loop(LoopType.kern, 43, Pragma.n),                    
-#            
+#tiling = [            
+#            Loop(LoopType.kern, 64, Pragma.n),                
+#            Loop(LoopType.fm, 8, Pragma.n),
+#Loop(LoopType.rowcol, RowCol(55,55), Pragma.n),
+#             
 #            Loop(LoopType.rowcol, RowCol(55,55), Pragma.n),
 #            Loop(LoopType.kern, 256, Pragma.n),
 #            Loop(LoopType.fm, 48, Pragma.n)
 #
 #          ]
 #
-#buff = dian.calcBuffers(tiling, AlexNet2)  
+#args = OptArgs(tiling, template, layer, EnergyModel(200, 6 ,1 ,1), zinq)
+#OptimizeTile(args)
 #
-#currEnergy = dian.calcEnergy(buff, EnergyModel())
-#printTile(dian.archU + dian.archP + tiling,1)
+#buff = template.calcBuffers(tiling, layer)  
+#
+#currEnergy = template.calcEnergy(buff, EnergyModel(), layer)
+#printTile(template.archU + template.archP + tiling,1)
 #print buff
 ##print (ii, i), (ii1, i1), currEnergy, sum(buff.Bin)+sum(buff.Bkern)+sum(buff.Bout)
 #print currEnergy, sum(buff.Bin)+sum(buff.Bkern)+sum(buff.Bout)
-
-#f.close()

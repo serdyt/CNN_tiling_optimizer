@@ -54,7 +54,7 @@ class Buffers(object):
         self.RRout = map(mul, self.RRout, buff.RRout)
         self.RRkern = map(mul, self.RRkern, buff.RRkern)
             
-    def calcBuffSizeRR(self, left, loop, archU, archP):
+    def calcBuffSizeRR(self, left, loop, archU, archP, skip):
         # TODO: Move RRout*2 to Buffers (it is in calcEnergy now)
     
         if self.usedData == []:
@@ -75,7 +75,7 @@ class Buffers(object):
         if loop.size == self.usedData[loop.type.value]:
             return
     
-        level = len([x.type for x in archP + left if x.type == loop.type ])
+        level = len([x.type for x in skip + archP + left if x.type == loop.type ])
         if level < 0 and level > 2:
             print "WTF", level, loop
             raise Exception('Too many loop levels') 
@@ -126,28 +126,19 @@ class Buffers(object):
                                         self.usedData[LoopType.rowcol.value].col)
                        
         #TODO: check levels of dx dy
-        elif loop.type == LoopType.dx:
-            rrin, rrout = dxRR(loop.size,
-                                self.usedData[LoopType.dx.value],
-                                self.usedData[LoopType.rowcol.value].col)
-            self.RRin[level] *= rrin
-            self.RRout[level] *= rrout                                                 
-    
-        elif loop.type == LoopType.dy:
-            rrin, rrout = dyRR(loop.size,
-                               self.usedData[LoopType.dy.value],
-                               self.usedData[LoopType.rowcol.value].row)
-            self.RRin[level] *= rrin
-            self.RRout[level] *= rrout
-
-#    def mergeBuff(self, hwRestrictions):
-#        for b,rr in zip([self.Bin, self.RRin, self.Bkern], [self.RRkern, self.Bout, self.RRout]):
-#            if 0 in b:
-                
-          
-#    def shiftLeft(self):
-#        for x in [self.Bin, self.RRin, self.Bkern, self.RRkern, self.Bout, self.RRout]:
-#            x.sort(key=lambda v: v!= 0)            
+#        elif loop.type == LoopType.dx:
+#            rrin, rrout = dxRR(loop.size,
+#                                self.usedData[LoopType.dx.value],
+#                                self.usedData[LoopType.rowcol.value].col)
+#            self.RRin[level] *= rrin
+#            self.RRout[level] *= rrout                                                 
+#    
+#        elif loop.type == LoopType.dy:
+#            rrin, rrout = dyRR(loop.size,
+#                               self.usedData[LoopType.dy.value],
+#                               self.usedData[LoopType.rowcol.value].row)
+#            self.RRin[level] *= rrin
+#            self.RRout[level] *= rrout
            
     def __str__ (self):
         return "Bin " + str(self.Bin) + str(self.RRin) + str(reduce(mul, self.RRin)) + " \n" + \
@@ -156,14 +147,3 @@ class Buffers(object):
 #               "DRin " + str(self.DRout) + str([b*r for b,r in zip(self.Bin,self.RRin)]) + "\n" + \
 #               "DRkern " + str(self.DRkern) + str([b*r for b,r in zip(self.Bkern,self.RRkern)]) + "\n" + \
 #               "DRout "+ str(self.DRin) + str([b*r for b,r in zip(self.Bout,self.RRout)]) + "\n"
-
-def printTile (tile, i=2, energy=0, buff=0):
-    if i == 1:
-        print  [(elm.type.name, elm.size) for elm in tile]
-    elif i == 2:
-        print  [elm.type.name for elm in tile]
-    elif i == 3:
-        lst = [str(elm.size) for elm in tile]
-        print '\t'.join(lst+[str(int(energy))]+[str(buff)])
-    else:
-        print tile

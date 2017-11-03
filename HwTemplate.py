@@ -1,19 +1,15 @@
-from enum import Enum
-
-from LoopType import LoopType, Loop, RowCol
+from LoopType import LoopType, Loop, RowCol, Pragma
 from Buffers import Buffers
 from math import floor, ceil
 from operator import mul
 
-class Pragma(Enum):
-    n = 0 # normal
-    u = 1 # unroll
-    p = 2 # pipeline
+
 
 class HwTemplate(object):
-    def __init__(self, name, archU=[], archP=[]):
+    def __init__(self, name, archU=[], archP=[], skip = []):
         self.archU = archU
         self.archP = archP
+        self.skipLoop = skip
         self.name = name
         
         self.numU = len(self.archU)
@@ -73,82 +69,158 @@ class HwTemplate(object):
         for index in xrange(len(tiledTemplate)):
             loop = tiledTemplate[index]
             left = tiledTemplate[:index]
-            buff.calcBuffSizeRR(left, loop, self.archU, self.archP)
+            buff.calcBuffSizeRR(left, loop, self.archU, self.archP, self.skipLoop)
                     
         return buff
         
-    def calcEnergy(self, buff, energyModel):
-        res = 0        
+    def calcEnergy(self, buff, energyModel, layer):
+        res = 0
             
-        for rr in [buff.RRin, buff.RRkern]:
+        for rr, data in zip([buff.RRin, buff.RRkern], [layer.dataIn, layer.dataKern]):
             a = rr[2]
             b = rr[1]
             c = rr[0]
-            
-            res += (2*a - 1) * energyModel.DRAM
+
+            res += a * energyModel.DRAM * data
             if rr[1] != 1:
-                res += a*(2*b - 1)*energyModel.buff 
-            if rr[0] != 1:
-                res += a*b*(2*c - 1)*energyModel.RF
+                res += a * b * energyModel.buff * data
+            res += a*b*c*energyModel.RF * data      
                 
         a = buff.RRout[2]
         b = buff.RRout[1]
         c = buff.RRout[0]
+        data = layer.dataOut        
         
-        res += a * energyModel.DRAM
+        res += (2*a - 1) * energyModel.DRAM * data
         if rr[1] != 1:
-            res += a * b * energyModel.buff 
-        if rr[0] != 1:
-            res += a*b*c*energyModel.RF
+            res += a*(2*b - 1)*energyModel.buff * data
+        res += a*b*(2*c - 1)*energyModel.RF * data
+            
+        # the amount of MAC operations
+        res += layer.MAC * energyModel.ALU
         
         return res
             
 '''
 Example tempate classes
 '''    
-        
+
+#Make a variation without kern in archP
 class DiaNNao(HwTemplate):
     def __init__(self):
         super(DiaNNao, self).__init__("DiaNNao", [Loop(LoopType.fm, 16, Pragma.u), Loop(LoopType.kern, 16, Pragma.u)],
-              [Loop(LoopType.fm, 1, Pragma.p)]
+              [Loop(LoopType.fm, 1, Pragma.p), Loop(LoopType.kern, 1, Pragma.p), Loop(LoopType.dx, 1, Pragma.p), Loop(LoopType.dy, 1, Pragma.p)]
               )
+    
+    # This is not correct at all       
+    def calcBuffers(self, tiledTemplate, layer):
+        superBuff = super(DiaNNao, self).calcBuffers(tiledTemplate, layer)
+        
+        buff = Buffers()
+        
+        #Bout[0] = fm
+        buff.Bout[0] = self.archU[0]
+        #RRout[0] = fm1 / fm0
+        buff.RRout[0] = ceil(self.archP[0] / float(self.archU[0]))
+        
+        #Binp[0] = fm1
+        buff.Bin[0] = self.archP[0]
+        #RRinp[0] = kern1 / kern0
+        buff.RRin[0] = ceil(self.archP[1] / float(self.archU[1]))
+        
+        #Bkern[0] = kern1 * fm1
+        buff.Bkern[0] = self.archP[1] * self.archP[0]
+        #RRkern[0] = 1
+        
+        #Bout[1] = kern1
+        buff.RRout[1] = self.archP[1]
+        #RRout[1] = dx * dy
+        buff.RRout[1] = self.archP[2] * self.archP[3]
+        
+        if (superBuff.Bin[1] == 0):
+            buff.RRin[2] = 1
+        
+        
+        #Bin[1] = fm1 * dx * dy
+        buff.Bin[1] = self.archP[2] * self.archP[3] * self.archP[0]
+        #RRin[1] = 
+        
+        buff.concatBuff(superBuff)        
+        
+        return buff
 
 
-## TODO: there should be RR and energy computations here
-#class DNNweaver(HwTemplate):
-#    def __init__(self):
-##        include fm?
-#        super(DNNweaver, self).__init__("DNNweaver", [Loop(LoopType.col, 1, Pragma.u), Loop(LoopType.kern, 1, Pragma.u)],
-#                                     [Loop(LoopType.dx, 1, Pragma.p), Loop(LoopType.col, 1, Pragma.p)])
-#                                     
-#    def calcBuffers(self):
-#        buff = Buffers()
-##       col1*kern0
-#        buff.Bout[0] = self.archP[1].size * self.archU[1].size
-##       2 * dx - each output element is reused dx times
-#        buff.RRout[0] = 2 * self.archP[0].size
-##       col0 for each kernel
-#        buff.Bin[0] = self.archU[0].size * self.archU[1].size
-#        return buff
+## TODO: make a version with unique Bin for all kernels (PUs)
+class DNNweaver(HwTemplate):
+    def __init__(self):
+#        include fm?
+        super(DNNweaver, self).__init__("DNNweaver", [Loop(LoopType.rowcol, RowCol(1,1), Pragma.u), Loop(LoopType.kern, 1, Pragma.u)],
+                                     [Loop(LoopType.dx, 1, Pragma.p), Loop(LoopType.dy, 1, Pragma.p), Loop(LoopType.rowcol, RowCol(1,1), Pragma.p)],
+                                     skip = [Loop(LoopType.kern, 1, Pragma.s), Loop(LoopType.fm, 1, Pragma.s)])
+                                     
+    def MACRestrictions(self, layer):
+        self.minArchUvalues = [layer.dx, 1]
+        self.maxArchUvalues = [layer.X, layer.kern]  
 
-#d= DiaNNao()
-#d = DNNweaver()
-#DiaNNao = HwTemplate("DianNao", [Loop(LoopType.fm, 16, Pragma.u), Loop(LoopType.kern, 16, Pragma.u)])
+    def setALU(self, ALUlist):
+        for i,MAC in enumerate(ALUlist):
+            if self.archU[i].type == LoopType.rowcol:
+                self.archU[i].size.col = MAC
+                self.archU[i].size.row = 1
+            else:
+                self.archU[i].size = MAC                                     
+                
+    def getLoopSizeByType(self, Ltype ,tiledTemplate):
+        for t in tiledTemplate:
+            if Ltype == t.type:
+                return t.size
+        
+        raise Exception("No such loop type for some reason, check DNNweawer template")
+                                     
+    def calcBuffers(self, tiledTemplate, layer):
+        superBuff = super(DNNweaver, self).calcBuffers(tiledTemplate, layer)
+        
+        buff = Buffers()
+        
+#        col1 = self.getLoopSizeByType(LoopType.rowcol, tiledTemplate).col
+#        row1 = self.getLoopSizeByType(LoopType.rowcol, tiledTemplate).row
+        col1 = self.archP[2].size.col
+        
+#       Bout[0] = ceil(col1/col0) * kern0
+        buff.Bout[0] = ceil(col1 / float(self.archU[0].size.col)) * self.archU[1].size
+#       dx*dy
+        buff.RRout[0] = self.archP[0].size * self.archP[1].size
+        
+#       Bin[0] = col0 * kernel
+        buff.Bin[0] = col1 * self.archU[1].size
+#       RRin[0] = dx #dx (not reused between kernels according to the architecture)
+        buff.RRin[0] = self.archP[0].size
+        
+#       RRin[1] = dy
+        buff.RRin[1] = self.archP[1].size
+        
+#       Bkern[0] = kern0 * dx * dy
+        buff.Bkern[0] = self.archU[1].size * self.archP[0].size * self.archP[1].size
+#       RRkern[0] = ceil(col1 / col0) * row0
+        buff.RRkern[0] = int(ceil(col1 / float(self.archU[0].size.col))) * self.archP[2].size.row    
+        
+        buff.concatBuff(superBuff)
+        
+        return buff
+
 
 class CNP (HwTemplate):
     def __init__(self):
         super(CNP, self).__init__(  "CNP",
                                     [Loop(LoopType.dx, 1, Pragma.u), Loop(LoopType.dy, 1, Pragma.u)], 
-                                    [Loop(LoopType.rowcol, RowCol(1,1), Pragma.p)]
+                                    [Loop(LoopType.rowcol, RowCol(1,1), Pragma.p)],
+                                    skip = [Loop(LoopType.fm, 1, Pragma.s)]
                                  )
-                                 
+
     def calcBuffers(self, tiledTemplate, layer):
         superBuff = super(CNP, self).calcBuffers(tiledTemplate, layer)
          
         buff = Buffers()
-        
-        buff.Bin[0] = 1
-        buff.RRin[0] = 1
         
         # Bkern[0] = dx * dy
         buff.Bkern[0] = self.archU[0].size * self.archU[1].size
@@ -161,21 +233,23 @@ class CNP (HwTemplate):
         buff.RRout[0] = self.archU[0].size
         
         # Bout[1] = col * (dy-1)
-        buff.Bout[1] = self.archP[0].size.col * (self.archU[1].size - 1)
+        buff.Bout[0] += self.archP[0].size.col * (self.archU[1].size - 1)
         # RRout[1] = dy
-        buff.RRout[1] = self.archU[1].size 
-        
+        buff.RRout[0] *= self.archU[1].size 
+                       
         buff.concatBuff(superBuff)        
         
         return buff
- 
+
+
 class CNPfm (HwTemplate):
     def __init__(self):
         super(CNPfm, self).__init__(  "CNPfm",
                                     [Loop(LoopType.dx, 1, Pragma.u), Loop(LoopType.dy, 1, Pragma.u), Loop(LoopType.fm, 1, Pragma.u)], 
-                                    [Loop(LoopType.rowcol, RowCol(1,1), Pragma.p)]
+                                    [Loop(LoopType.rowcol, RowCol(1,1), Pragma.p)],
+                                     skip = [Loop(LoopType.fm, 1, Pragma.s)]
                                  )
-                                 
+                                                                  
     def calcBuffers(self, tiledTemplate, layer):
         superBuff = super(CNPfm, self).calcBuffers(tiledTemplate, layer)
 
@@ -195,9 +269,9 @@ class CNPfm (HwTemplate):
         buff.RRout[0] = self.archU[0].size
         
         # Bout[1] = col * (dy-1)
-        buff.Bout[1] = self.archP[0].size.col * (self.archU[1].size - 1)
+        buff.Bout[0] += self.archP[0].size.col * (self.archU[1].size - 1)
         # RRout[1] = dy
-        buff.RRout[1] = self.archU[1].size 
+        buff.RRout[0] *= self.archU[1].size 
         
         buff.concatBuff(superBuff)        
         
@@ -209,6 +283,7 @@ class Eyeriss (HwTemplate):
                                     [Loop(LoopType.dy, 1, Pragma.u), Loop(LoopType.rowcol, RowCol(1,1), Pragma.u), Loop(LoopType.kern, 1, Pragma.u)], 
                                     [Loop(LoopType.rowcol, RowCol(1,1), Pragma.p), Loop(LoopType.dx, 1, Pragma.p), Loop(LoopType.fm, 1, Pragma.p)],
                                  )
+                                 
     def calcBuffers(self, tiledTemplate, layer):
         superBuff = super(Eyeriss, self).calcBuffers(tiledTemplate, layer)
         
@@ -254,30 +329,32 @@ class Eyeriss (HwTemplate):
             else:
                 self.archU[i].size = MAC
                 
-    def calcEnergy(self, buff, energyModel):
+    def calcEnergy(self, buff, energyModel, layer):
         res = 0        
-            
-        for rr in [buff.RRin, buff.RRkern]:
+       
+        for rr, data in zip([buff.RRin, buff.RRkern], [layer.dataIn, layer.dataKern]):
             a = rr[2]
             b = rr[1]
             c = rr[0]
             
-            res += (2*a - 1) * energyModel.DRAM
+            res += a * energyModel.DRAM * data
             if rr[1] != 1:
-                res += a*(2*b - 1)*energyModel.buff 
-            if rr[0] != 1:
-#           2*c-1 is already in RRin[0]
-                res += a*b*c*energyModel.RF
-                
+                res += a * b * energyModel.buff * data
+            res += a*b*c*energyModel.RF * data
+                                
         a = buff.RRout[2]
         b = buff.RRout[1]
         c = buff.RRout[0]
+        data = layer.dataOut
         
-        res += a * energyModel.DRAM
+        res += (2*a - 1) * energyModel.DRAM * data
         if rr[1] != 1:
-            res += a * b * energyModel.buff 
-        if rr[0] != 1:
-            res += a*b*c*energyModel.RF
+            res += a*(2*b - 1)*energyModel.buff * data
+#       2*c-1 is already in RRin[0]
+        res += a*b*c*energyModel.RF * data
+            
+        # the amount of MAC operations
+        res += layer.MAC * energyModel.ALU
         
         return res
         
